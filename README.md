@@ -48,6 +48,41 @@ npm run build
 npm run start
 ```
 
+## Supabase 연동 준비
+
+현재 서비스 화면은 계속 mock data 기반으로 동작하며, 아직 Supabase 조회/저장 기능은 본 화면에 연결되어 있지 않습니다.
+대신 다음 단계 연동을 위해 Supabase 초기 설정과 테스트용 리소스까지 준비된 상태입니다.
+
+- 클라이언트 파일: `lib/supabase/client.ts`
+- 환경변수 예시 파일: `.env.example`
+- 1차 스키마 파일: `supabase/schema.sql`
+- RLS 정책 파일: `supabase/rls.sql`
+- 개발 연결 테스트 화면: `/dev/supabase-test`
+
+로컬에서는 `.env.example` 내용을 참고해서 `.env.local` 파일을 만들고 아래 값을 채워주세요.
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=your-supabase-project-url
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
+```
+
+현재는 실제로 Supabase를 호출하지 않기 때문에, 이 값을 넣지 않아도 mock data 화면 자체는 그대로 유지됩니다.
+
+Supabase 테이블을 준비하려면 Supabase Dashboard > SQL Editor에서 `supabase/schema.sql` 파일 내용을 그대로 실행하면 됩니다.
+RLS 정책을 적용하려면 그 다음 단계로 `supabase/rls.sql` 파일도 SQL Editor에서 이어서 실행하면 됩니다.
+
+### 개발용 연결 테스트 페이지
+
+`/dev/supabase-test` 페이지에서는 아래 항목을 `select` 전용으로 확인할 수 있습니다.
+
+- Supabase 연결 성공/실패 상태
+- `profiles` 최근 5명
+- `projects` 전체
+- `expense_categories` 전체
+- `expense_requests` 최근 5건
+
+이 페이지는 개발 확인용이며, 기존 서비스용 화면과 별도로 유지됩니다.
+
 ## 다른 컴퓨터에서 이어서 작업하기
 
 다른 노트북이나 PC에서도 바로 이어서 작업할 수 있도록 별도 안내 문서를 추가했습니다.
@@ -76,10 +111,19 @@ git push origin main
 ### Vercel 배포
 
 1. GitHub 저장소를 Vercel에 Import 합니다.
-2. Framework Preset은 `Next.js`로 자동 감지되면 그대로 사용합니다.
-3. 현재 저장소에는 `pnpm-lock.yaml`이 있으므로 Vercel은 `pnpm` 기반으로 설치/빌드를 진행하면 됩니다.
-4. 별도 환경 변수는 현재 mock data UI 프로토타입 기준으로 필요하지 않습니다.
-5. 배포 후 기본 라우트와 주요 화면이 정상 표시되는지 확인합니다.
+2. Framework Preset은 `Next.js`를 사용합니다.
+3. Build Command는 `npm run build`를 사용합니다.
+4. Output Directory는 기본값을 그대로 사용합니다.
+5. 현재 mock data UI만 배포할 때는 필수 환경변수는 없습니다.
+6. Supabase 준비 상태까지 함께 유지하려면 Vercel Project Settings > Environment Variables에 아래 두 값을 등록할 수 있습니다.
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=your-supabase-project-url
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
+```
+
+7. Hobby 무료 플랜 기준으로 바로 배포할 수 있습니다.
+8. 배포 후 기본 라우트와 주요 화면이 정상 표시되는지 확인합니다.
 
 현재 프로젝트는 Next.js 표준 구조를 따르고 있어, 추가 커스텀 서버나 API 설정 없이 Vercel에 바로 배포할 수 있는 상태를 목표로 정리했습니다.
 
@@ -95,6 +139,7 @@ git push origin main
 - `월말 정산` `/settlements/monthly`
 - `회계 자료` `/accounting/materials`
 - `설정` `/settings`
+- `Supabase 연결 테스트` `/dev/supabase-test`
 
 ## 현재 상태
 
@@ -105,6 +150,7 @@ git push origin main
 - 승인, 정산, 다운로드, 저장 버튼은 React state 또는 안내용 alert 중심으로 동작합니다.
 - 증빙 파일 미리보기와 회계 처리 결과는 목업 데이터로 표현됩니다.
 - 실제 금융 데이터나 회계 데이터는 모두 연동되어 있지 않습니다.
+- Supabase는 스키마와 RLS 정책, 환경변수, 개발용 조회 테스트 화면까지만 준비되어 있습니다.
 
 ## 추후 연동 예정 기능
 
