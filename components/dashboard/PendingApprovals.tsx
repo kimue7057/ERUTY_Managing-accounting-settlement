@@ -1,0 +1,61 @@
+import { DashboardTable } from "@/components/common/DashboardTable";
+import type { PendingApproval } from "@/types";
+import { formatKrw } from "@/utils/format";
+
+type PendingApprovalsProps = {
+  items: PendingApproval[];
+};
+
+const columns = [
+  { key: "requester", label: "요청자" },
+  { key: "title", label: "제목" },
+  { key: "project", label: "프로젝트" },
+  { key: "amount", label: "요청 금액", align: "right" as const },
+  { key: "urgency", label: "긴급 여부", align: "center" as const },
+];
+
+export function PendingApprovals({ items }: PendingApprovalsProps) {
+  return (
+    <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-semibold text-slate-950">승인 대기 지출 목록</h3>
+          <p className="mt-1 text-sm text-slate-500">
+            우선 검토가 필요한 요청과 프로젝트를 빠르게 확인합니다.
+          </p>
+        </div>
+        <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+          대기 3건
+        </span>
+      </div>
+
+      <DashboardTable columns={columns}>
+        {items.map((item) => (
+          <tr
+            key={`${item.requester}-${item.title}`}
+            className="border-b border-slate-100 last:border-b-0"
+          >
+            <td className="px-4 py-4 font-medium text-slate-700">{item.requester}</td>
+            <td className="px-4 py-4 text-slate-900">{item.title}</td>
+            <td className="px-4 py-4 text-slate-600">{item.project}</td>
+            <td className="px-4 py-4 text-right font-medium text-slate-900">
+              {formatKrw(item.requestedAmount)}
+            </td>
+            <td className="px-4 py-4 text-center">
+              <span
+                className={[
+                  "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold",
+                  item.urgency === "긴급"
+                    ? "border-rose-200 bg-rose-50 text-rose-700"
+                    : "border-slate-200 bg-slate-100 text-slate-600",
+                ].join(" ")}
+              >
+                {item.urgency}
+              </span>
+            </td>
+          </tr>
+        ))}
+      </DashboardTable>
+    </section>
+  );
+}
