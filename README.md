@@ -1,8 +1,10 @@
 # ERUTY 자금관리 시스템
 
+사내 경비 기안·승인·정산 관리 UI 프로토타입
+
 ## 프로젝트 소개
 
-ERUTY 자금관리 시스템은 사내 자금 사용 기안, 승인, 정산, 회계 자료 전달 흐름을 한 화면에서 점검할 수 있도록 만든 B2B SaaS 스타일의 관리자용 프론트엔드 UI 프로토타입입니다.
+ERUTY 자금관리 시스템은 사내 경비 기안, 승인, 정산, 회계 자료 전달 흐름을 한 화면에서 점검할 수 있도록 만든 B2B SaaS 스타일의 프론트엔드 UI 프로토타입입니다.
 
 - `Next.js`
 - `TypeScript`
@@ -12,20 +14,38 @@ ERUTY 자금관리 시스템은 사내 자금 사용 기안, 승인, 정산, 회
 
 ## 실행 방법
 
+### pnpm 기준
+
 ```bash
 pnpm install
 pnpm dev
+```
+
+### npm 기준
+
+```bash
+npm install
+npm run dev
 ```
 
 개발 서버 실행 후 아래 주소에서 확인할 수 있습니다.
 
 - [http://127.0.0.1:3000](http://127.0.0.1:3000)
 
-추가 검증 명령:
+검증 및 프로덕션 실행 명령:
 
 ```bash
 pnpm lint
 pnpm build
+pnpm start
+```
+
+또는
+
+```bash
+npm run lint
+npm run build
+npm run start
 ```
 
 ## 다른 컴퓨터에서 이어서 작업하기
@@ -42,6 +62,26 @@ cd ERUTY_Managing-accounting-settlement
 pnpm install
 pnpm dev
 ```
+
+## 배포 방법
+
+### GitHub 업로드
+
+```bash
+git add -A
+git commit -m "작업 내용 요약"
+git push origin main
+```
+
+### Vercel 배포
+
+1. GitHub 저장소를 Vercel에 Import 합니다.
+2. Framework Preset은 `Next.js`로 자동 감지되면 그대로 사용합니다.
+3. 현재 저장소에는 `pnpm-lock.yaml`이 있으므로 Vercel은 `pnpm` 기반으로 설치/빌드를 진행하면 됩니다.
+4. 별도 환경 변수는 현재 mock data UI 프로토타입 기준으로 필요하지 않습니다.
+5. 배포 후 기본 라우트와 주요 화면이 정상 표시되는지 확인합니다.
+
+현재 프로젝트는 Next.js 표준 구조를 따르고 있어, 추가 커스텀 서버나 API 설정 없이 Vercel에 바로 배포할 수 있는 상태를 목표로 정리했습니다.
 
 ## 구현된 화면 목록
 
@@ -64,6 +104,7 @@ pnpm dev
 - 실제 API 호출은 하지 않습니다.
 - 승인, 정산, 다운로드, 저장 버튼은 React state 또는 안내용 alert 중심으로 동작합니다.
 - 증빙 파일 미리보기와 회계 처리 결과는 목업 데이터로 표현됩니다.
+- 실제 금융 데이터나 회계 데이터는 모두 연동되어 있지 않습니다.
 
 ## 추후 연동 예정 기능
 
