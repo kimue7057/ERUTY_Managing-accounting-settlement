@@ -28,6 +28,21 @@ pnpm lint
 pnpm build
 ```
 
+## 다른 컴퓨터에서 이어서 작업하기
+
+다른 노트북이나 PC에서도 바로 이어서 작업할 수 있도록 별도 안내 문서를 추가했습니다.
+
+- 작업 가이드: [docs/WORKING_ON_ANOTHER_COMPUTER.md](docs/WORKING_ON_ANOTHER_COMPUTER.md)
+
+기본 흐름만 먼저 보면:
+
+```bash
+git clone https://github.com/kimue7057/ERUTY_Managing-accounting-settlement.git
+cd ERUTY_Managing-accounting-settlement
+pnpm install
+pnpm dev
+```
+
 ## 구현된 화면 목록
 
 - `대시보드` `/`
