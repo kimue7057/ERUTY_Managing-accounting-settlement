@@ -5,6 +5,8 @@ import type { ExpenseRequestFormData } from "@/types";
 
 type ExpenseGuidePanelProps = {
   formData: ExpenseRequestFormData;
+  expenseTypeLabel: string;
+  relatedProjectLabel: string;
 };
 
 const guideCards = [
@@ -43,7 +45,11 @@ const guideCards = [
   },
 ];
 
-export function ExpenseGuidePanel({ formData }: ExpenseGuidePanelProps) {
+export function ExpenseGuidePanel({
+  formData,
+  expenseTypeLabel,
+  relatedProjectLabel,
+}: ExpenseGuidePanelProps) {
   return (
     <aside className="space-y-5 xl:sticky xl:top-6 xl:self-start">
       {guideCards.map((card) => {
@@ -81,7 +87,11 @@ export function ExpenseGuidePanel({ formData }: ExpenseGuidePanelProps) {
         );
       })}
 
-      <RequestSummaryCard formData={formData} />
+      <RequestSummaryCard
+        formData={formData}
+        expenseTypeLabel={expenseTypeLabel}
+        relatedProjectLabel={relatedProjectLabel}
+      />
     </aside>
   );
 }

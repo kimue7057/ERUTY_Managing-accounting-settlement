@@ -3,13 +3,19 @@ import type { ExpenseRequestFormData } from "@/types";
 
 type RequestSummaryCardProps = {
   formData: ExpenseRequestFormData;
+  expenseTypeLabel: string;
+  relatedProjectLabel: string;
 };
 
 function SummaryValue({ value }: { value: string }) {
   return <span className={value === "미입력" ? "text-slate-400" : "text-slate-900"}>{value}</span>;
 }
 
-export function RequestSummaryCard({ formData }: RequestSummaryCardProps) {
+export function RequestSummaryCard({
+  formData,
+  expenseTypeLabel,
+  relatedProjectLabel,
+}: RequestSummaryCardProps) {
   const amountNumber = Number(formData.amount);
   const attachmentCount = Object.values(formData.attachments).reduce(
     (count, files) => count + files.length,
@@ -27,7 +33,7 @@ export function RequestSummaryCard({ formData }: RequestSummaryCardProps) {
         <div className="flex items-center justify-between gap-4 rounded-2xl bg-slate-50 px-4 py-3">
           <dt className="text-sm font-medium text-slate-500">경비 유형</dt>
           <dd className="text-sm font-semibold">
-            <SummaryValue value={formData.expenseType || "미입력"} />
+            <SummaryValue value={expenseTypeLabel || "미입력"} />
           </dd>
         </div>
         <div className="flex items-center justify-between gap-4 rounded-2xl bg-slate-50 px-4 py-3">
@@ -39,7 +45,7 @@ export function RequestSummaryCard({ formData }: RequestSummaryCardProps) {
         <div className="flex items-center justify-between gap-4 rounded-2xl bg-slate-50 px-4 py-3">
           <dt className="text-sm font-medium text-slate-500">관련 업무/프로젝트</dt>
           <dd className="text-sm font-semibold">
-            <SummaryValue value={formData.relatedProject || "미입력"} />
+            <SummaryValue value={relatedProjectLabel || "미입력"} />
           </dd>
         </div>
         <div className="flex items-center justify-between gap-4 rounded-2xl bg-slate-50 px-4 py-3">

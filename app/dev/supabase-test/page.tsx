@@ -224,6 +224,46 @@ function QueryInfoRow({
   );
 }
 
+function RawJsonSection({
+  title,
+  description,
+  loading,
+  error,
+  jsonText,
+}: {
+  title: string;
+  description: string;
+  loading: boolean;
+  error: string | null;
+  jsonText: string;
+}) {
+  return (
+    <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">
+      <div>
+        <h3 className="text-lg font-semibold text-slate-950">{title}</h3>
+        <p className="mt-1 text-sm text-slate-500">{description}</p>
+      </div>
+
+      <div className="mt-4">
+        {loading ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-10 text-center">
+            <p className="text-sm font-medium text-slate-700">raw JSON을 불러오는 중입니다...</p>
+          </div>
+        ) : error ? (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-5 text-sm leading-6 text-rose-700">
+            <p className="font-semibold">raw JSON 표시에 실패했습니다.</p>
+            <p className="mt-2 whitespace-pre-wrap break-words">{error}</p>
+          </div>
+        ) : (
+          <pre className="overflow-x-auto rounded-2xl border border-slate-200 bg-slate-950 px-4 py-4 text-xs leading-6 text-slate-100">
+            {jsonText}
+          </pre>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function ResultSection<T>({
   title,
   description,
@@ -363,7 +403,7 @@ export default function SupabaseTestPage() {
             .limit(5),
           supabase
             .from("projects")
-            .select("id, name, description, status, created_at")
+            .select("*")
             .order("created_at", { ascending: false }),
           supabase
             .from("expense_categories")
@@ -518,6 +558,9 @@ export default function SupabaseTestPage() {
     profilesState.rows[0]
       ? `id: ${profilesState.rows[0].id} / name: ${profilesState.rows[0].name}`
       : "없음";
+  const hasTestProject = projectsState.rows.some(
+    (project) => project.name === "SUPABASE_REAL_TEST_999",
+  );
   const projectsFirstRowSummary =
     projectsState.rows[0]
       ? `id: ${projectsState.rows[0].id} / name: ${projectsState.rows[0].name}`
@@ -530,6 +573,7 @@ export default function SupabaseTestPage() {
     expenseRequestsState.rows[0]
       ? `id: ${expenseRequestsState.rows[0].id} / title: ${expenseRequestsState.rows[0].title}`
       : "없음";
+  const projectsRawJson = JSON.stringify(projectsState.rows, null, 2);
 
   return (
     <div className="space-y-8">
@@ -603,6 +647,16 @@ export default function SupabaseTestPage() {
             label="Supabase 브라우저 클라이언트 사용 가능 여부"
             value={isSupabaseConfigured ? "가능" : "불가"}
           />
+          <QueryInfoRow
+            label="projects 테스트 데이터 검사"
+            value={
+              projectsState.error
+                ? "검사 실패"
+                : hasTestProject
+                  ? "테스트 데이터 발견: SUPABASE_REAL_TEST_999"
+                  : "테스트 데이터 없음"
+            }
+          />
         </div>
 
         {globalErrorMessage ? (
@@ -658,7 +712,7 @@ export default function SupabaseTestPage() {
 
       <ResultSection
         title="projects 전체"
-        description="프로젝트 테이블 전체 목록을 실제 Supabase에서 조회합니다."
+        description="프로젝트 테이블을 select('*')로 전체 조회하며 limit 없이 실제 Supabase 결과를 표시합니다."
         loading={loading}
         error={projectsState.error}
         rows={projectsState.rows}
@@ -678,6 +732,14 @@ export default function SupabaseTestPage() {
             </tr>
           ))
         }
+      />
+
+      <RawJsonSection
+        title="projects 전체 raw JSON"
+        description="projects 테이블의 select('*') 전체 조회 결과를 raw JSON으로 그대로 표시합니다."
+        loading={loading}
+        error={projectsState.error}
+        jsonText={projectsRawJson}
       />
 
       <ResultSection

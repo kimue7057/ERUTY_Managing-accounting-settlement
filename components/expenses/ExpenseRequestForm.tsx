@@ -1,5 +1,7 @@
 "use client";
 
+import type { FormEvent } from "react";
+
 import { AmountText } from "@/components/common/AmountText";
 import { AttachmentMockUploader } from "@/components/expenses/AttachmentMockUploader";
 import { ExpenseFormSection } from "@/components/expenses/ExpenseFormSection";
@@ -15,9 +17,12 @@ import type {
 type ExpenseRequestFormProps = {
   formData: ExpenseRequestFormData;
   errors: ExpenseRequestErrors;
-  expenseTypeOptions: string[];
-  relatedWorkOptions: string[];
+  expenseTypeOptions: Array<{ value: string; label: string }>;
+  relatedWorkOptions: Array<{ value: string; label: string }>;
   attachmentCategories: AttachmentCategory[];
+  isReferenceLoading?: boolean;
+  isSubmitting?: boolean;
+  selectedExpenseTypeLabel?: string;
   onFieldChange: <K extends keyof ExpenseRequestFormData>(
     field: K,
     value: ExpenseRequestFormData[K],
@@ -25,7 +30,7 @@ type ExpenseRequestFormProps = {
   onAddAttachment: (category: AttachmentCategory, fileNames: string[]) => void;
   onCancel: () => void;
   onTemporarySave: () => void;
-  onSubmit: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 };
 
 const paymentMethods: PaymentMethod[] = ["개인카드", "법인카드", "현금", "계좌이체"];
@@ -89,6 +94,9 @@ export function ExpenseRequestForm({
   expenseTypeOptions,
   relatedWorkOptions,
   attachmentCategories,
+  isReferenceLoading = false,
+  isSubmitting = false,
+  selectedExpenseTypeLabel = "",
   onFieldChange,
   onAddAttachment,
   onCancel,
@@ -96,18 +104,18 @@ export function ExpenseRequestForm({
   onSubmit,
 }: ExpenseRequestFormProps) {
   const amountNumber = formData.amount.trim().length > 0 ? Number(formData.amount) : null;
-  const attendeeLabel = formData.expenseType === "식대/회의비" ? "참석자" : "사용 대상/비고";
+  const attendeeLabel = selectedExpenseTypeLabel === "식대/회의비" ? "참석자" : "사용 대상/비고";
   const attendeeHelperText =
-    formData.expenseType === "식대/회의비"
+    selectedExpenseTypeLabel === "식대/회의비"
       ? "식대 또는 회의비는 참석자 정보를 함께 적어주세요."
       : "필요한 경우 사용 대상이나 간단한 메모를 적어주세요.";
   const attendeePlaceholder =
-    formData.expenseType === "식대/회의비"
+    selectedExpenseTypeLabel === "식대/회의비"
       ? "예: 김유성, 공하연, 협력사 담당자 2명"
       : "예: 팀 공용 비품 구매 / 마케팅 행사 운영팀 사용";
 
   return (
-    <div className="space-y-5">
+    <form className="space-y-5" onSubmit={onSubmit}>
       <ExpenseFormSection
         title="경비 기본 정보"
         description="직원 경비 등록에 필요한 핵심 정보를 먼저 입력합니다."
@@ -140,12 +148,15 @@ export function ExpenseRequestForm({
               id="expenseType"
               value={formData.expenseType}
               onChange={(event) => onFieldChange("expenseType", event.target.value)}
+              disabled={isReferenceLoading || isSubmitting}
               className={fieldClassName}
             >
-              <option value="">경비 유형을 선택해주세요</option>
+              <option value="">
+                {isReferenceLoading ? "경비 유형을 불러오는 중입니다" : "경비 유형을 선택해주세요"}
+              </option>
               {expenseTypeOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>
@@ -194,12 +205,17 @@ export function ExpenseRequestForm({
               id="relatedProject"
               value={formData.relatedProject}
               onChange={(event) => onFieldChange("relatedProject", event.target.value)}
+              disabled={isReferenceLoading || isSubmitting}
               className={fieldClassName}
             >
-              <option value="">관련 업무/프로젝트를 선택해주세요</option>
+              <option value="">
+                {isReferenceLoading
+                  ? "프로젝트를 불러오는 중입니다"
+                  : "관련 업무/프로젝트를 선택해주세요"}
+              </option>
               {relatedWorkOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>
@@ -415,20 +431,21 @@ export function ExpenseRequestForm({
             <button
               type="button"
               onClick={onTemporarySave}
+              disabled={isSubmitting}
               className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-100"
             >
               임시저장
             </button>
             <button
-              type="button"
-              onClick={onSubmit}
+              type="submit"
+              disabled={isSubmitting || isReferenceLoading}
               className="inline-flex items-center justify-center rounded-2xl bg-[var(--primary)] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[var(--primary-strong)]"
             >
-              승인 요청
+              {isSubmitting ? "저장 중..." : "승인 요청"}
             </button>
           </div>
         </div>
       </div>
-    </div>
+    </form>
   );
 }
