@@ -7,7 +7,9 @@ import {
   Database,
   FolderKanban,
   ListChecks,
+  RefreshCw,
   ReceiptText,
+  ShieldCheck,
   Users,
 } from "lucide-react";
 
@@ -17,11 +19,13 @@ import { EmptyState } from "@/components/common/EmptyState";
 import { PageHeader } from "@/components/common/PageHeader";
 import { StatCard } from "@/components/common/StatCard";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { roleViews } from "@/data/mockData";
 import {
   getSupabaseBrowserClient,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+import type { RoleView } from "@/types";
+
+type QueryStatus = "idle" | "loading" | "success" | "error";
 
 type ProfileRow = {
   id: string;
@@ -56,6 +60,16 @@ type ExpenseRequestRow = {
   evidence_status: string;
   requested_at: string;
 };
+
+type QuerySectionState<T> = {
+  rows: T[];
+  error: string | null;
+};
+
+const devRoleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
+const supabaseUrlValue = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+const supabasePublishableKeyValue =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "";
 
 const profileColumns = [
   { key: "name", label: "이름" },
@@ -94,6 +108,7 @@ function formatDateTime(value: string) {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
   }).format(new Date(value));
 }
 
@@ -103,6 +118,18 @@ function formatDate(value: string) {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date(value));
+}
+
+function getSupabaseHost(value: string) {
+  if (!value) {
+    return "-";
+  }
+
+  try {
+    return new URL(value).host;
+  } catch {
+    return "형식 오류";
+  }
 }
 
 function mapProjectStatusToBadge(status: string) {
@@ -157,60 +184,6 @@ function formatProfileRole(role: string) {
   }
 }
 
-function ResultSection<T>({
-  title,
-  description,
-  loading,
-  error,
-  countLabel,
-  columns,
-  rows,
-  renderRows,
-}: {
-  title: string;
-  description: string;
-  loading: boolean;
-  error: string | null;
-  countLabel: string;
-  columns: Array<{ key: string; label: string; align?: "left" | "center" | "right" }>;
-  rows: T[];
-  renderRows: (rows: T[]) => ReactNode;
-}) {
-  return (
-    <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">
-      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h3 className="text-lg font-semibold text-slate-950">{title}</h3>
-          <p className="mt-1 text-sm text-slate-500">{description}</p>
-        </div>
-
-        <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
-          {countLabel}
-        </span>
-      </div>
-
-      {loading ? (
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-10 text-center">
-          <p className="text-sm font-medium text-slate-700">데이터를 불러오는 중입니다...</p>
-        </div>
-      ) : error ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-5 text-sm leading-6 text-rose-700">
-          <p className="font-semibold">조회에 실패했습니다.</p>
-          <p className="mt-2 whitespace-pre-wrap break-words">{error}</p>
-        </div>
-      ) : rows.length === 0 ? (
-        <EmptyState
-          className="mt-0"
-          title="조회 결과가 없습니다."
-          description="연결은 되었지만 표시할 데이터가 없거나 현재 정책상 조회 가능한 데이터가 없습니다."
-        />
-      ) : (
-        <DashboardTable columns={columns}>{renderRows(rows)}</DashboardTable>
-      )}
-    </section>
-  );
-}
-
 function ConnectionPill({
   label,
   tone,
@@ -226,41 +199,163 @@ function ConnectionPill({
   }[tone];
 
   return (
-    <span className={`inline-flex items-center rounded-full border px-3 py-1 text-sm font-semibold ${toneClassName}`}>
+    <span
+      className={`inline-flex items-center rounded-full border px-3 py-1 text-sm font-semibold ${toneClassName}`}
+    >
       {label}
     </span>
   );
 }
 
+function QueryInfoRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+        {label}
+      </p>
+      <div className="mt-2 text-sm font-semibold text-slate-900">{value}</div>
+    </div>
+  );
+}
+
+function ResultSection<T>({
+  title,
+  description,
+  loading,
+  error,
+  rows,
+  columns,
+  firstRowSummary,
+  renderRows,
+}: {
+  title: string;
+  description: string;
+  loading: boolean;
+  error: string | null;
+  rows: T[];
+  columns: Array<{ key: string; label: string; align?: "left" | "center" | "right" }>;
+  firstRowSummary: string;
+  renderRows: (rows: T[]) => ReactNode;
+}) {
+  return (
+    <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-950">{title}</h3>
+            <p className="mt-1 text-sm text-slate-500">{description}</p>
+          </div>
+
+          <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
+            조회 결과 {rows.length}건
+          </span>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
+          <p>
+            첫 번째 row:
+            <span className="ml-2 font-semibold text-slate-900">{firstRowSummary}</span>
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        {loading ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-10 text-center">
+            <p className="text-sm font-medium text-slate-700">데이터를 불러오는 중입니다...</p>
+          </div>
+        ) : error ? (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-5 text-sm leading-6 text-rose-700">
+            <p className="font-semibold">조회에 실패했습니다.</p>
+            <p className="mt-2 whitespace-pre-wrap break-words">{error}</p>
+          </div>
+        ) : rows.length === 0 ? (
+          <EmptyState
+            className="mt-0"
+            title="조회 결과가 없습니다."
+            description="mock data 대신 실제 Supabase 조회 결과만 표시하며, 현재 응답한 row가 없습니다."
+          />
+        ) : (
+          <DashboardTable columns={columns}>{renderRows(rows)}</DashboardTable>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function SupabaseTestPage() {
+  const [reloadToken, setReloadToken] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [profiles, setProfiles] = useState<ProfileRow[]>([]);
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
-  const [categories, setCategories] = useState<ExpenseCategoryRow[]>([]);
-  const [expenseRequests, setExpenseRequests] = useState<ExpenseRequestRow[]>([]);
-  const [profilesError, setProfilesError] = useState<string | null>(null);
-  const [projectsError, setProjectsError] = useState<string | null>(null);
-  const [categoriesError, setCategoriesError] = useState<string | null>(null);
-  const [expenseRequestsError, setExpenseRequestsError] = useState<string | null>(null);
+  const [queryStatus, setQueryStatus] = useState<QueryStatus>("idle");
+  const [lastQueriedAt, setLastQueriedAt] = useState<string | null>(null);
+  const [globalErrorMessage, setGlobalErrorMessage] = useState<string | null>(null);
+  const [profilesState, setProfilesState] = useState<QuerySectionState<ProfileRow>>({
+    rows: [],
+    error: null,
+  });
+  const [projectsState, setProjectsState] = useState<QuerySectionState<ProjectRow>>({
+    rows: [],
+    error: null,
+  });
+  const [categoriesState, setCategoriesState] =
+    useState<QuerySectionState<ExpenseCategoryRow>>({
+      rows: [],
+      error: null,
+    });
+  const [expenseRequestsState, setExpenseRequestsState] =
+    useState<QuerySectionState<ExpenseRequestRow>>({
+      rows: [],
+      error: null,
+    });
 
   useEffect(() => {
     let isMounted = true;
 
     async function loadData() {
-      if (!isSupabaseConfigured) {
+      const requestedAt = new Date().toISOString();
+
+      if (!isMounted) {
         return;
       }
 
       setLoading(true);
-      setProfilesError(null);
-      setProjectsError(null);
-      setCategoriesError(null);
-      setExpenseRequestsError(null);
+      setQueryStatus("loading");
+      setLastQueriedAt(requestedAt);
+      setGlobalErrorMessage(null);
+      setProfilesState({ rows: [], error: null });
+      setProjectsState({ rows: [], error: null });
+      setCategoriesState({ rows: [], error: null });
+      setExpenseRequestsState({ rows: [], error: null });
+
+      if (!isSupabaseConfigured) {
+        const message =
+          "Supabase 환경변수가 설정되지 않았습니다. NEXT_PUBLIC_SUPABASE_URL 및 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY를 확인해주세요.";
+
+        if (!isMounted) {
+          return;
+        }
+
+        setGlobalErrorMessage(message);
+        setQueryStatus("error");
+        setLoading(false);
+        return;
+      }
 
       try {
         const supabase = getSupabaseBrowserClient();
 
-        const [profilesResult, projectsResult, categoriesResult, expenseRequestsResult] = await Promise.all([
+        const [
+          profilesResult,
+          projectsResult,
+          categoriesResult,
+          expenseRequestsResult,
+        ] = await Promise.all([
           supabase
             .from("profiles")
             .select("id, email, name, department, role, created_at")
@@ -285,32 +380,43 @@ export default function SupabaseTestPage() {
           return;
         }
 
-        if (profilesResult.error) {
-          setProfiles([]);
-          setProfilesError(profilesResult.error.message);
-        } else {
-          setProfiles(profilesResult.data ?? []);
-        }
+        setProfilesState({
+          rows: profilesResult.error ? [] : (profilesResult.data ?? []),
+          error: profilesResult.error ? profilesResult.error.message : null,
+        });
+        setProjectsState({
+          rows: projectsResult.error ? [] : (projectsResult.data ?? []),
+          error: projectsResult.error ? projectsResult.error.message : null,
+        });
+        setCategoriesState({
+          rows: categoriesResult.error ? [] : (categoriesResult.data ?? []),
+          error: categoriesResult.error ? categoriesResult.error.message : null,
+        });
+        setExpenseRequestsState({
+          rows: expenseRequestsResult.error ? [] : (expenseRequestsResult.data ?? []),
+          error: expenseRequestsResult.error ? expenseRequestsResult.error.message : null,
+        });
 
-        if (projectsResult.error) {
-          setProjects([]);
-          setProjectsError(projectsResult.error.message);
-        } else {
-          setProjects(projectsResult.data ?? []);
-        }
+        const errorMessages = [
+          profilesResult.error
+            ? `[profiles]\n${profilesResult.error.message}`
+            : null,
+          projectsResult.error
+            ? `[projects]\n${projectsResult.error.message}`
+            : null,
+          categoriesResult.error
+            ? `[expense_categories]\n${categoriesResult.error.message}`
+            : null,
+          expenseRequestsResult.error
+            ? `[expense_requests]\n${expenseRequestsResult.error.message}`
+            : null,
+        ].filter(Boolean);
 
-        if (categoriesResult.error) {
-          setCategories([]);
-          setCategoriesError(categoriesResult.error.message);
+        if (errorMessages.length > 0) {
+          setGlobalErrorMessage(errorMessages.join("\n\n"));
+          setQueryStatus("error");
         } else {
-          setCategories(categoriesResult.data ?? []);
-        }
-
-        if (expenseRequestsResult.error) {
-          setExpenseRequests([]);
-          setExpenseRequestsError(expenseRequestsResult.error.message);
-        } else {
-          setExpenseRequests(expenseRequestsResult.data ?? []);
+          setQueryStatus("success");
         }
       } catch (error) {
         const message =
@@ -320,14 +426,12 @@ export default function SupabaseTestPage() {
           return;
         }
 
-        setProfiles([]);
-        setProjects([]);
-        setCategories([]);
-        setExpenseRequests([]);
-        setProfilesError(message);
-        setProjectsError(message);
-        setCategoriesError(message);
-        setExpenseRequestsError(message);
+        setProfilesState({ rows: [], error: message });
+        setProjectsState({ rows: [], error: message });
+        setCategoriesState({ rows: [], error: message });
+        setExpenseRequestsState({ rows: [], error: message });
+        setGlobalErrorMessage(message);
+        setQueryStatus("error");
       } finally {
         if (isMounted) {
           setLoading(false);
@@ -340,83 +444,102 @@ export default function SupabaseTestPage() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [reloadToken]);
 
-  const hasEnv = isSupabaseConfigured;
-  const queryErrors = [profilesError, projectsError, categoriesError, expenseRequestsError].filter(Boolean);
-  const hasQueryError = queryErrors.length > 0;
-
-  const connectionState = !hasEnv
-    ? {
-        label: "환경변수 미설정",
-        tone: "warning" as const,
-        description: "NEXT_PUBLIC_SUPABASE_URL 과 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY 설정이 필요합니다.",
-      }
-    : loading
+  const queryStateSummary =
+    queryStatus === "loading"
       ? {
-          label: "연결 확인 중",
+          label: "조회 중",
           tone: "neutral" as const,
-          description: "Supabase에 연결하여 select 테스트를 수행하고 있습니다.",
+          description: "client component + useEffect 방식으로 Supabase를 다시 조회하고 있습니다.",
         }
-      : hasQueryError
+      : queryStatus === "success"
         ? {
-            label: "조회 실패",
-            tone: "danger" as const,
-            description: "환경변수는 확인되었지만 일부 또는 전체 조회에 실패했습니다.",
-          }
-        : {
             label: "조회 성공",
             tone: "success" as const,
-            description: "모든 select 테스트가 정상적으로 응답했습니다.",
-          };
+            description: "4개 테이블 select가 모두 정상 응답했습니다.",
+          }
+        : queryStatus === "error"
+          ? {
+              label: "조회 실패",
+              tone: "danger" as const,
+              description: "환경변수 문제 또는 RLS/권한 문제로 일부 또는 전체 조회가 실패했습니다.",
+            }
+          : {
+              label: "조회 전",
+              tone: "warning" as const,
+              description: "아직 Supabase 조회가 시작되지 않았습니다.",
+            };
 
   const summaryCards = [
     {
-      id: "connection",
-      title: "Supabase 연결 상태",
-      description: connectionState.description,
-      value: <ConnectionPill label={connectionState.label} tone={connectionState.tone} />,
+      id: "query-status",
+      title: "Supabase 조회 상태",
+      description: queryStateSummary.description,
+      value: (
+        <ConnectionPill
+          label={queryStateSummary.label}
+          tone={queryStateSummary.tone}
+        />
+      ),
       icon: <Database className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "profiles",
-      title: "profiles 조회",
-      description: profilesError ? "조회 실패" : loading ? "로딩 중" : "최근 5명",
-      value: <span>{profiles.length}건</span>,
+      title: "profiles",
+      description: profilesState.error ? "조회 실패" : "최근 5명",
+      value: <span>{profilesState.rows.length}건</span>,
       icon: <Users className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "projects",
-      title: "projects 조회",
-      description: projectsError ? "조회 실패" : loading ? "로딩 중" : "전체 프로젝트",
-      value: <span>{projects.length}건</span>,
+      title: "projects",
+      description: projectsState.error ? "조회 실패" : "전체 프로젝트",
+      value: <span>{projectsState.rows.length}건</span>,
       icon: <FolderKanban className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "categories",
-      title: "expense_categories 조회",
-      description: categoriesError ? "조회 실패" : loading ? "로딩 중" : "전체 경비 유형",
-      value: <span>{categories.length}건</span>,
+      title: "expense_categories",
+      description: categoriesState.error ? "조회 실패" : "전체 경비 유형",
+      value: <span>{categoriesState.rows.length}건</span>,
       icon: <ListChecks className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "requests",
-      title: "expense_requests 조회",
-      description: expenseRequestsError ? "조회 실패" : loading ? "로딩 중" : "최근 5건",
-      value: <span>{expenseRequests.length}건</span>,
+      title: "expense_requests",
+      description: expenseRequestsState.error ? "조회 실패" : "최근 5건",
+      value: <span>{expenseRequestsState.rows.length}건</span>,
       icon: <ReceiptText className="h-5 w-5" strokeWidth={1.8} />,
     },
   ];
+
+  const profilesFirstRowSummary =
+    profilesState.rows[0]
+      ? `id: ${profilesState.rows[0].id} / name: ${profilesState.rows[0].name}`
+      : "없음";
+  const projectsFirstRowSummary =
+    projectsState.rows[0]
+      ? `id: ${projectsState.rows[0].id} / name: ${projectsState.rows[0].name}`
+      : "없음";
+  const categoriesFirstRowSummary =
+    categoriesState.rows[0]
+      ? `id: ${categoriesState.rows[0].id} / name: ${categoriesState.rows[0].name}`
+      : "없음";
+  const expenseRequestsFirstRowSummary =
+    expenseRequestsState.rows[0]
+      ? `id: ${expenseRequestsState.rows[0].id} / title: ${expenseRequestsState.rows[0].title}`
+      : "없음";
 
   return (
     <div className="space-y-8">
       <PageHeader
         title="Supabase 연결 테스트"
-        description="Supabase DB 연결과 기본 select 조회 동작을 개발용으로 확인하는 화면입니다."
-        roles={roleViews}
+        description="Supabase 환경변수 인식 여부와 실제 select 조회 결과를 개발용으로 확인하는 화면입니다."
+        roles={devRoleViews}
         activeRole="관리자 보기"
         eyebrow="개발 도구"
-        badgeText="기존 mock UI와 분리된 테스트 페이지"
+        badgeText="mock data 없이 실제 조회만 표시"
       />
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -431,46 +554,89 @@ export default function SupabaseTestPage() {
         ))}
       </section>
 
-      {!hasEnv ? (
-        <section className="rounded-[1.75rem] border border-amber-200 bg-amber-50 p-5 shadow-sm">
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-amber-700 shadow-sm">
-              <AlertTriangle className="h-5 w-5" strokeWidth={1.8} />
+      <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-950">환경변수 및 조회 진단</h3>
+            <p className="mt-1 text-sm text-slate-500">
+              브라우저에서 `NEXT_PUBLIC_*` 환경변수를 실제로 읽는지와 마지막 조회 결과를 함께 확인합니다.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setReloadToken((current) => current + 1)}
+            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+          >
+            <RefreshCw className="h-4.5 w-4.5" strokeWidth={1.8} />
+            다시 조회
+          </button>
+        </div>
+
+        <div className="mt-5 grid gap-4 xl:grid-cols-3">
+          <QueryInfoRow
+            label="NEXT_PUBLIC_SUPABASE_URL 존재 여부"
+            value={supabaseUrlValue ? "있음" : "없음"}
+          />
+          <QueryInfoRow
+            label="NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY 존재 여부"
+            value={supabasePublishableKeyValue ? "있음" : "없음"}
+          />
+          <QueryInfoRow
+            label="NEXT_PUBLIC_SUPABASE_URL host"
+            value={getSupabaseHost(supabaseUrlValue)}
+          />
+          <QueryInfoRow
+            label="Supabase 조회 시각"
+            value={lastQueriedAt ? formatDateTime(lastQueriedAt) : "조회 전"}
+          />
+          <QueryInfoRow
+            label="Supabase 조회 성공/실패 상태"
+            value={
+              <ConnectionPill
+                label={queryStateSummary.label}
+                tone={queryStateSummary.tone}
+              />
+            }
+          />
+          <QueryInfoRow
+            label="Supabase 브라우저 클라이언트 사용 가능 여부"
+            value={isSupabaseConfigured ? "가능" : "불가"}
+          />
+        </div>
+
+        {globalErrorMessage ? (
+          <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-5 text-sm leading-6 text-rose-700">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" strokeWidth={1.8} />
+              <div className="min-w-0">
+                <p className="font-semibold">실패 시 error.message 전체</p>
+                <pre className="mt-2 whitespace-pre-wrap break-words font-sans">
+                  {globalErrorMessage}
+                </pre>
+              </div>
             </div>
-            <div>
-              <h3 className="text-lg font-semibold text-amber-900">Supabase 환경변수가 설정되지 않았습니다.</h3>
-              <p className="mt-2 text-sm leading-6 text-amber-800">
-                <code>NEXT_PUBLIC_SUPABASE_URL</code> 과{" "}
-                <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code> 를 설정한 뒤 다시 확인해주세요.
+          </div>
+        ) : (
+          <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm leading-6 text-emerald-700">
+            <div className="flex items-start gap-3">
+              <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0" strokeWidth={1.8} />
+              <p>
+                현재 화면은 mock data fallback 없이 실제 Supabase 조회 결과만 표시합니다.
               </p>
             </div>
           </div>
-        </section>
-      ) : (
-        <section className="rounded-[1.75rem] border border-slate-200/90 bg-[var(--card-secondary)] p-5 shadow-sm">
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white text-[var(--primary)] shadow-sm">
-              <Database className="h-5 w-5" strokeWidth={1.8} />
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold text-slate-950">조회 안내</h3>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                이 페이지는 <code>select</code> 만 사용합니다. 현재 RLS 정책상 로그인 세션이 없으면 조회가 실패할 수 있으며,
-                그 경우 아래에 Supabase 에러 메시지를 그대로 표시합니다.
-              </p>
-            </div>
-          </div>
-        </section>
-      )}
+        )}
+      </section>
 
       <ResultSection
         title="profiles 최근 5명"
-        description="생성일 기준 최근 프로필 5건을 조회합니다."
+        description="생성일 기준 최근 프로필 5건을 실제 Supabase에서 조회합니다."
         loading={loading}
-        error={profilesError}
-        countLabel={`총 ${profiles.length}건`}
+        error={profilesState.error}
+        rows={profilesState.rows}
         columns={profileColumns}
-        rows={profiles}
+        firstRowSummary={profilesFirstRowSummary}
         renderRows={(rows) =>
           rows.map((profile) => (
             <tr key={profile.id} className="border-b border-slate-100 last:border-b-0">
@@ -482,20 +648,22 @@ export default function SupabaseTestPage() {
                   {formatProfileRole(profile.role)}
                 </span>
               </td>
-              <td className="px-4 py-4 text-slate-500">{formatDateTime(profile.created_at)}</td>
+              <td className="px-4 py-4 text-slate-500">
+                {formatDateTime(profile.created_at)}
+              </td>
             </tr>
           ))
         }
       />
 
       <ResultSection
-        title="projects 테이블"
-        description="프로젝트 테이블의 전체 목록을 조회합니다."
+        title="projects 전체"
+        description="프로젝트 테이블 전체 목록을 실제 Supabase에서 조회합니다."
         loading={loading}
-        error={projectsError}
-        countLabel={`총 ${projects.length}건`}
+        error={projectsState.error}
+        rows={projectsState.rows}
         columns={projectColumns}
-        rows={projects}
+        firstRowSummary={projectsFirstRowSummary}
         renderRows={(rows) =>
           rows.map((project) => (
             <tr key={project.id} className="border-b border-slate-100 last:border-b-0">
@@ -503,7 +671,9 @@ export default function SupabaseTestPage() {
               <td className="px-4 py-4 text-center">
                 <StatusBadge status={mapProjectStatusToBadge(project.status)} />
               </td>
-              <td className="px-4 py-4 text-slate-500">{formatDateTime(project.created_at)}</td>
+              <td className="px-4 py-4 text-slate-500">
+                {formatDateTime(project.created_at)}
+              </td>
               <td className="px-4 py-4 text-slate-600">{project.description || "-"}</td>
             </tr>
           ))
@@ -511,13 +681,13 @@ export default function SupabaseTestPage() {
       />
 
       <ResultSection
-        title="expense_categories 테이블"
-        description="경비 유형 테이블의 전체 목록을 조회합니다."
+        title="expense_categories 전체"
+        description="경비 유형 테이블 전체 목록을 실제 Supabase에서 조회합니다."
         loading={loading}
-        error={categoriesError}
-        countLabel={`총 ${categories.length}건`}
+        error={categoriesState.error}
+        rows={categoriesState.rows}
         columns={categoryColumns}
-        rows={categories}
+        firstRowSummary={categoriesFirstRowSummary}
         renderRows={(rows) =>
           rows.map((category) => (
             <tr key={category.id} className="border-b border-slate-100 last:border-b-0">
@@ -525,7 +695,9 @@ export default function SupabaseTestPage() {
               <td className="px-4 py-4 text-center">
                 <StatusBadge status={category.is_active ? "활성" : "비활성"} />
               </td>
-              <td className="px-4 py-4 text-slate-500">{formatDateTime(category.created_at)}</td>
+              <td className="px-4 py-4 text-slate-500">
+                {formatDateTime(category.created_at)}
+              </td>
             </tr>
           ))
         }
@@ -533,16 +705,18 @@ export default function SupabaseTestPage() {
 
       <ResultSection
         title="expense_requests 최근 5건"
-        description="요청일 기준 최근 지출 요청 5건을 조회합니다."
+        description="요청일 기준 최근 지출 요청 5건을 실제 Supabase에서 조회합니다."
         loading={loading}
-        error={expenseRequestsError}
-        countLabel={`총 ${expenseRequests.length}건`}
+        error={expenseRequestsState.error}
+        rows={expenseRequestsState.rows}
         columns={expenseRequestColumns}
-        rows={expenseRequests}
+        firstRowSummary={expenseRequestsFirstRowSummary}
         renderRows={(rows) =>
           rows.map((request) => (
             <tr key={request.id} className="border-b border-slate-100 last:border-b-0">
-              <td className="px-4 py-4 font-medium text-slate-700">{request.request_no}</td>
+              <td className="px-4 py-4 font-medium text-slate-700">
+                {request.request_no}
+              </td>
               <td className="px-4 py-4 text-slate-900">{request.title}</td>
               <td className="px-4 py-4 text-right font-medium text-slate-900">
                 <AmountText value={request.amount} />
@@ -553,7 +727,9 @@ export default function SupabaseTestPage() {
               <td className="px-4 py-4 text-center">
                 <StatusBadge status={mapEvidenceStatusToBadge(request.evidence_status)} />
               </td>
-              <td className="px-4 py-4 text-slate-500">{formatDate(request.requested_at)}</td>
+              <td className="px-4 py-4 text-slate-500">
+                {formatDate(request.requested_at)}
+              </td>
             </tr>
           ))
         }
