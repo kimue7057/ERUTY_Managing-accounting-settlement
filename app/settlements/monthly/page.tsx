@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BadgeCheck,
   Ban,
@@ -18,11 +18,33 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { StatCard } from "@/components/common/StatCard";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import {
-  monthlySettlementData,
-  monthlySettlementMonths,
-  monthlySettlementStatusOptions,
-  roleViews,
-} from "@/data/mockData";
+  getSupabaseBrowserClient,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
+import type {
+  AttachmentStatus,
+  MonthlySettlementEmployee,
+  MonthlySettlementExpenseItem,
+  MonthlySettlementStatus,
+  RoleView,
+} from "@/types";
+import {
+  formatSupabaseDate,
+  getSingleRelation,
+  type DbEvidenceStatus,
+  type DbExpenseStatus,
+  type DbPaymentMethod,
+} from "@/utils/expenseRequests";
+
+const roleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
+
+const settlementStatusOptions = [
+  "전체",
+  "정산대기",
+  "지급대기",
+  "지급완료",
+  "보류",
+] as const;
 
 const employeeTableColumns = [
   { key: "employeeName", label: "직원명" },
@@ -45,28 +67,333 @@ const detailTableColumns = [
   { key: "settlementStatus", label: "정산 상태", align: "center" as const },
 ];
 
+type MonthOption = {
+  value: string;
+  label: string;
+};
+
+type RelationValue<T> = T | T[] | null;
+
+type RequesterRelation = {
+  id: string;
+  name: string;
+};
+
+type CategoryRelation = {
+  id: string;
+  name: string;
+};
+
+type SettlementExpenseRow = {
+  id: string;
+  request_no: string;
+  amount: number;
+  expense_date: string;
+  vendor: string;
+  status: DbExpenseStatus;
+  settlement_requested: boolean;
+  payment_method: DbPaymentMethod;
+  evidence_status: DbEvidenceStatus;
+  requester: RelationValue<RequesterRelation>;
+  category: RelationValue<CategoryRelation>;
+};
+
+type MonthlySettlementSummaryValues = {
+  employeeCount: number;
+  totalPlannedAmount: number;
+  paidAmount: number;
+  holdAmount: number;
+  rejectedAmount: number;
+};
+
+function createRecentMonthOptions(count = 6): MonthOption[] {
+  const now = new Date();
+
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(now.getFullYear(), now.getMonth() - index, 1);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+
+    return {
+      value: `${year}-${month}`,
+      label: `${year}년 ${date.getMonth() + 1}월`,
+    };
+  });
+}
+
+function getMonthRange(monthValue: string) {
+  const [yearText, monthText] = monthValue.split("-");
+  const year = Number(yearText);
+  const monthIndex = Number(monthText) - 1;
+  const monthStart = new Date(Date.UTC(year, monthIndex, 1));
+  const monthEnd = new Date(Date.UTC(year, monthIndex + 1, 0));
+
+  return {
+    start: monthStart.toISOString().slice(0, 10),
+    end: monthEnd.toISOString().slice(0, 10),
+  };
+}
+
+function isSettlementPaymentMethod(paymentMethod: DbPaymentMethod) {
+  return paymentMethod === "personal_card" || paymentMethod === "cash";
+}
+
+function mapAttachmentStatus(evidenceStatus: DbEvidenceStatus): AttachmentStatus {
+  return evidenceStatus === "attached" ? "첨부완료" : "미첨부";
+}
+
+function getExpenseSettlementStatus(row: SettlementExpenseRow): MonthlySettlementStatus {
+  if (row.status === "rejected") {
+    return "보류";
+  }
+
+  if (row.evidence_status === "none") {
+    return "보류";
+  }
+
+  return "지급대기";
+}
+
+function getEmployeePayoutStatus(
+  employee: Pick<
+    MonthlySettlementEmployee,
+    "approvedAmount" | "missingProofAmount" | "finalPayoutAmount"
+  >,
+): MonthlySettlementStatus {
+  if (employee.missingProofAmount > 0) {
+    return "보류";
+  }
+
+  if (employee.finalPayoutAmount > 0) {
+    return "지급대기";
+  }
+
+  return "정산대기";
+}
+
+function buildSettlementEmployees(
+  rows: SettlementExpenseRow[],
+): MonthlySettlementEmployee[] {
+  const employeeMap = new Map<string, MonthlySettlementEmployee>();
+
+  rows.forEach((row) => {
+    const requester = getSingleRelation(row.requester);
+    const category = getSingleRelation(row.category);
+    const employeeId = requester?.id ?? `unknown-${row.id}`;
+    const employeeName = requester?.name ?? "미확인 직원";
+
+    if (!employeeMap.has(employeeId)) {
+      employeeMap.set(employeeId, {
+        id: employeeId,
+        employeeName,
+        personalExpenseTotal: 0,
+        approvedAmount: 0,
+        rejectedAmount: 0,
+        missingProofAmount: 0,
+        finalPayoutAmount: 0,
+        payoutStatus: "정산대기",
+        expenses: [],
+      });
+    }
+
+    const employee = employeeMap.get(employeeId);
+
+    if (!employee) {
+      return;
+    }
+
+    employee.personalExpenseTotal += row.amount;
+
+    if (row.status === "approved" && row.evidence_status === "attached") {
+      employee.approvedAmount += row.amount;
+      employee.finalPayoutAmount += row.amount;
+    } else if (row.status === "approved" && row.evidence_status === "none") {
+      employee.missingProofAmount += row.amount;
+    } else if (row.status === "rejected") {
+      employee.rejectedAmount += row.amount;
+    }
+
+    const settlementExpense: MonthlySettlementExpenseItem = {
+      id: row.id,
+      usedDate: formatSupabaseDate(row.expense_date),
+      expenseType: category?.name ?? "기타",
+      merchantName: row.vendor,
+      amount: row.amount,
+      approvedAmount: row.status === "approved" ? row.amount : 0,
+      attachmentStatus: mapAttachmentStatus(row.evidence_status),
+      settlementStatus: getExpenseSettlementStatus(row),
+    };
+
+    employee.expenses.push(settlementExpense);
+  });
+
+  return Array.from(employeeMap.values())
+    .map((employee) => ({
+      ...employee,
+      payoutStatus: getEmployeePayoutStatus(employee),
+      expenses: [...employee.expenses].sort((left, right) =>
+        right.usedDate.localeCompare(left.usedDate),
+      ),
+    }))
+    .sort((left, right) => right.finalPayoutAmount - left.finalPayoutAmount);
+}
+
+function buildSummary(employees: MonthlySettlementEmployee[]): MonthlySettlementSummaryValues {
+  return employees.reduce<MonthlySettlementSummaryValues>(
+    (summary, employee) => ({
+      employeeCount: summary.employeeCount + 1,
+      totalPlannedAmount: summary.totalPlannedAmount + employee.finalPayoutAmount,
+      paidAmount: summary.paidAmount,
+      holdAmount: summary.holdAmount + employee.missingProofAmount,
+      rejectedAmount: summary.rejectedAmount + employee.rejectedAmount,
+    }),
+    {
+      employeeCount: 0,
+      totalPlannedAmount: 0,
+      paidAmount: 0,
+      holdAmount: 0,
+      rejectedAmount: 0,
+    },
+  );
+}
+
 export default function MonthlySettlementPage() {
-  const [selectedMonth, setSelectedMonth] =
-    useState<(typeof monthlySettlementMonths)[number]>("2026년 6월");
+  const monthOptions = useMemo(() => createRecentMonthOptions(), []);
+  const [selectedMonth, setSelectedMonth] = useState(monthOptions[0]?.value ?? "");
   const [employeeFilter, setEmployeeFilter] = useState("전체");
   const [statusFilter, setStatusFilter] =
-    useState<(typeof monthlySettlementStatusOptions)[number]>("전체");
+    useState<(typeof settlementStatusOptions)[number]>("전체");
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
+  const [employees, setEmployees] = useState<MonthlySettlementEmployee[]>([]);
+  const [summary, setSummary] = useState<MonthlySettlementSummaryValues>({
+    employeeCount: 0,
+    totalPlannedAmount: 0,
+    paidAmount: 0,
+    holdAmount: 0,
+    rejectedAmount: 0,
+  });
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const currentMonthData = useMemo(
-    () =>
-      monthlySettlementData.find((monthData) => monthData.month === selectedMonth) ??
-      monthlySettlementData[0],
-    [selectedMonth],
-  );
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadMonthlySettlements() {
+      setIsLoading(true);
+      setLoadError(null);
+
+      if (!isSupabaseConfigured) {
+        if (!isMounted) {
+          return;
+        }
+
+        setLoadError(
+          "Supabase 환경변수가 설정되지 않았습니다. NEXT_PUBLIC_SUPABASE_URL과 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY를 확인해주세요.",
+        );
+        setEmployees([]);
+        setSummary({
+          employeeCount: 0,
+          totalPlannedAmount: 0,
+          paidAmount: 0,
+          holdAmount: 0,
+          rejectedAmount: 0,
+        });
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const monthRange = getMonthRange(selectedMonth);
+        const { data, error } = await supabase
+          .from("expense_requests")
+          .select(
+            `
+              id,
+              request_no,
+              amount,
+              expense_date,
+              vendor,
+              status,
+              settlement_requested,
+              payment_method,
+              evidence_status,
+              requester:profiles!expense_requests_user_id_fkey (
+                id,
+                name
+              ),
+              category:expense_categories!expense_requests_category_id_fkey (
+                id,
+                name
+              )
+            `,
+          )
+          .gte("expense_date", monthRange.start)
+          .lte("expense_date", monthRange.end)
+          .eq("settlement_requested", true)
+          .in("payment_method", ["personal_card", "cash"])
+          .in("status", ["approved", "rejected"])
+          .order("expense_date", { ascending: false });
+
+        if (error) {
+          throw error;
+        }
+
+        if (!isMounted) {
+          return;
+        }
+
+        const settlementRows = ((data ?? []) as SettlementExpenseRow[]).filter((row) =>
+          isSettlementPaymentMethod(row.payment_method),
+        );
+
+        const nextEmployees = buildSettlementEmployees(settlementRows);
+
+        setEmployees(nextEmployees);
+        setSummary(buildSummary(nextEmployees));
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "월말 정산 데이터를 불러오는 중 알 수 없는 오류가 발생했습니다.";
+
+        if (!isMounted) {
+          return;
+        }
+
+        setLoadError(message);
+        setEmployees([]);
+        setSummary({
+          employeeCount: 0,
+          totalPlannedAmount: 0,
+          paidAmount: 0,
+          holdAmount: 0,
+          rejectedAmount: 0,
+        });
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void loadMonthlySettlements();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedMonth]);
+
+  const selectedMonthLabel =
+    monthOptions.find((option) => option.value === selectedMonth)?.label ?? selectedMonth;
 
   const employeeOptions = useMemo(
-    () => ["전체", ...currentMonthData.employees.map((employee) => employee.employeeName)],
-    [currentMonthData.employees],
+    () => ["전체", ...employees.map((employee) => employee.employeeName)],
+    [employees],
   );
 
   const filteredEmployees = useMemo(() => {
-    return currentMonthData.employees.filter((employee) => {
+    return employees.filter((employee) => {
       const matchesEmployee =
         employeeFilter === "전체" || employee.employeeName === employeeFilter;
       const matchesStatus =
@@ -74,48 +401,47 @@ export default function MonthlySettlementPage() {
 
       return matchesEmployee && matchesStatus;
     });
-  }, [currentMonthData.employees, employeeFilter, statusFilter]);
+  }, [employeeFilter, employees, statusFilter]);
 
   const selectedEmployee = useMemo(
-    () =>
-      currentMonthData.employees.find((employee) => employee.id === selectedEmployeeId) ?? null,
-    [currentMonthData.employees, selectedEmployeeId],
+    () => employees.find((employee) => employee.id === selectedEmployeeId) ?? null,
+    [employees, selectedEmployeeId],
   );
 
   const summaryCards = [
     {
       id: "employee-count",
       title: "정산 대상 직원 수",
-      value: <span>{currentMonthData.summary.employeeCount}명</span>,
-      description: "이번 정산 월에 개인 선지출 정산 대상에 포함된 직원 수입니다.",
+      value: isLoading ? null : <span>{summary.employeeCount}명</span>,
+      description: "해당 월에 개인 선지출 정산 대상이 있는 직원 수입니다.",
       icon: <Users className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "total-planned",
       title: "총 정산 예정액",
-      value: <AmountText value={currentMonthData.summary.totalPlannedAmount} />,
-      description: "승인 기준으로 이번 달 지급 예정으로 집계된 총 정산 금액입니다.",
+      value: isLoading ? null : <AmountText value={summary.totalPlannedAmount} />,
+      description: "증빙이 갖춰진 승인완료 개인카드/현금 사용 건 기준 지급 예정 금액입니다.",
       icon: <WalletCards className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "paid-amount",
       title: "지급 완료액",
-      value: <AmountText value={currentMonthData.summary.paidAmount} />,
-      description: "이미 지급 완료 처리된 월말 정산 금액입니다.",
+      value: isLoading ? null : <AmountText value={summary.paidAmount} />,
+      description: "실제 지급 처리 업데이트는 아직 연결하지 않아 현재는 0원으로 표시합니다.",
       icon: <BadgeCheck className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "hold-amount",
       title: "보류 금액",
-      value: <AmountText value={currentMonthData.summary.holdAmount} />,
-      description: "증빙 누락 또는 검토 보완이 필요한 정산 보류 금액입니다.",
+      value: isLoading ? null : <AmountText value={summary.holdAmount} />,
+      description: "증빙이 미첨부된 승인완료 개인 선지출 금액입니다.",
       icon: <PauseCircle className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "rejected-amount",
       title: "반려 금액",
-      value: <AmountText value={currentMonthData.summary.rejectedAmount} />,
-      description: "정산 대상에서 제외되거나 반려 처리된 금액입니다.",
+      value: isLoading ? null : <AmountText value={summary.rejectedAmount} />,
+      description: "정산 대상에서 제외된 rejected 상태 금액입니다.",
       icon: <Ban className="h-5 w-5" strokeWidth={1.8} />,
     },
   ];
@@ -124,19 +450,26 @@ export default function MonthlySettlementPage() {
     <div className="space-y-8">
       <PageHeader
         title="월말 정산"
-        description="직원별 월말 정산 예정 금액과 지급 진행 상태를 확인합니다."
+        description="승인완료된 개인카드/현금 경비를 직원별로 집계해 월말 정산 예정 금액을 확인합니다."
         roles={roleViews}
         activeRole="관리자 보기"
         eyebrow="정산 지급 관리"
         badgeText="개인 선지출 정산 흐름"
       />
 
+      {loadError ? (
+        <section className="rounded-[1.75rem] border border-rose-200 bg-rose-50 px-5 py-4 text-sm leading-6 text-rose-700 shadow-sm">
+          <p className="font-semibold">월말 정산 데이터를 불러오지 못했습니다.</p>
+          <p className="mt-2 whitespace-pre-wrap break-words">{loadError}</p>
+        </section>
+      ) : null}
+
       <section className="rounded-[1.75rem] border border-slate-200/90 bg-[var(--card-secondary)] p-5 shadow-sm">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
             <h3 className="text-lg font-semibold text-slate-950">정산 대상 포함 기준</h3>
             <p className="mt-1 text-sm text-slate-500">
-              승인완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함되며, 법인카드 사용 건은 직원 지급 대상에서 제외됩니다.
+              승인완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함하고, 법인카드 사용 건은 직원 지급 대상에서 제외합니다.
             </p>
           </div>
 
@@ -160,11 +493,11 @@ export default function MonthlySettlementPage() {
             <div>
               <h3 className="text-lg font-semibold text-slate-950">정산 필터</h3>
               <p className="mt-1 text-sm text-slate-500">
-                정산 월, 직원, 상태 기준으로 월말 정산 예정 내역을 빠르게 확인합니다.
+                정산 월, 직원, 상태 기준으로 월말 정산 대상 내역을 빠르게 확인합니다.
               </p>
             </div>
             <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
-              총 {filteredEmployees.length}명 표시
+              {isLoading ? "데이터를 불러오는 중입니다" : `총 ${filteredEmployees.length}명 표시`}
             </span>
           </div>
 
@@ -177,16 +510,16 @@ export default function MonthlySettlementPage() {
                 id="settlement-month"
                 value={selectedMonth}
                 onChange={(event) => {
-                  setSelectedMonth(event.target.value as (typeof monthlySettlementMonths)[number]);
+                  setSelectedMonth(event.target.value);
                   setEmployeeFilter("전체");
                   setStatusFilter("전체");
                   setSelectedEmployeeId("");
                 }}
                 className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-[var(--primary)] focus:ring-4 focus:ring-[color:rgba(22,59,111,0.08)]"
               >
-                {monthlySettlementMonths.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
+                {monthOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
                   </option>
                 ))}
               </select>
@@ -218,11 +551,11 @@ export default function MonthlySettlementPage() {
                 id="settlement-status"
                 value={statusFilter}
                 onChange={(event) =>
-                  setStatusFilter(event.target.value as (typeof monthlySettlementStatusOptions)[number])
+                  setStatusFilter(event.target.value as (typeof settlementStatusOptions)[number])
                 }
                 className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm outline-none transition focus:border-[var(--primary)] focus:ring-4 focus:ring-[color:rgba(22,59,111,0.08)]"
               >
-                {monthlySettlementStatusOptions.map((option) => (
+                {settlementStatusOptions.map((option) => (
                   <option key={option} value={option}>
                     {option}
                   </option>
@@ -239,7 +572,9 @@ export default function MonthlySettlementPage() {
             key={card.id}
             title={card.title}
             description={card.description}
-            value={card.value}
+            value={
+              card.value ?? <span className="text-base font-medium text-slate-400">불러오는 중...</span>
+            }
             icon={card.icon}
           />
         ))}
@@ -249,7 +584,7 @@ export default function MonthlySettlementPage() {
         <div className="mb-4">
           <h3 className="text-lg font-semibold text-slate-950">직원별 월말 정산 예정 현황</h3>
           <p className="mt-1 text-sm text-slate-500">
-            승인 금액, 증빙 누락 금액, 최종 지급 예정액과 현재 지급 상태를 직원 단위로 확인합니다.
+            승인 금액, 반려 금액, 증빙 누락 금액, 최종 지급 예정액을 직원 단위로 확인합니다.
           </p>
         </div>
 
@@ -299,10 +634,17 @@ export default function MonthlySettlementPage() {
           ))}
         </DashboardTable>
 
-        {filteredEmployees.length === 0 ? (
+        {isLoading ? (
+          <EmptyState
+            title="월말 정산 대상을 불러오는 중입니다."
+            description="선택한 월의 approved/rejected 개인 선지출 내역을 직원별로 집계하고 있습니다."
+          />
+        ) : null}
+
+        {!isLoading && filteredEmployees.length === 0 ? (
           <EmptyState
             title="조건에 맞는 정산 대상 직원이 없습니다."
-            description="정산 월, 직원, 상태 필터를 조정해 다른 정산 내역을 확인해보세요."
+            description="정산 월, 직원, 상태 필터를 조정해서 다른 정산 내역을 확인해보세요."
           />
         ) : null}
 
@@ -316,7 +658,7 @@ export default function MonthlySettlementPage() {
           <div className="w-full max-w-5xl rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-sm font-medium text-slate-500">{selectedMonth} 정산 상세</p>
+                <p className="text-sm font-medium text-slate-500">{selectedMonthLabel} 정산 상세</p>
                 <div className="mt-2 flex flex-wrap items-center gap-3">
                   <h3 className="text-2xl font-semibold text-slate-950">
                     {selectedEmployee.employeeName}
@@ -324,7 +666,7 @@ export default function MonthlySettlementPage() {
                   <StatusBadge status={selectedEmployee.payoutStatus} />
                 </div>
                 <p className="mt-2 text-sm text-slate-500">
-                  승인완료된 개인카드/현금 사용 건 중심으로 월말 정산 대상 경비를 확인합니다.
+                  승인완료된 개인카드/현금 사용 건 중 월말 정산 대상 경비를 확인합니다.
                 </p>
               </div>
               <button
@@ -410,19 +752,26 @@ export default function MonthlySettlementPage() {
                   </tr>
                 ))}
               </DashboardTable>
+
+              {selectedEmployee.expenses.length === 0 ? (
+                <EmptyState
+                  title="표시할 정산 상세 내역이 없습니다."
+                  description="선택한 직원의 월말 정산 대상 경비가 없습니다."
+                />
+              ) : null}
             </div>
 
             <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
               <button
                 type="button"
-                onClick={() => window.alert("월말 정산이 확정되었습니다.")}
+                onClick={() => window.alert("정산 확정 기능은 추후 연동 예정입니다.")}
                 className="inline-flex items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
               >
                 정산 확정
               </button>
               <button
                 type="button"
-                onClick={() => window.alert("지급 완료 처리되었습니다.")}
+                onClick={() => window.alert("지급 완료 처리 기능은 추후 연동 예정입니다.")}
                 className="inline-flex items-center justify-center rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100"
               >
                 지급 완료 처리
@@ -443,8 +792,7 @@ export default function MonthlySettlementPage() {
         <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm leading-6 text-slate-600">
           <SearchCheck className="mt-0.5 h-5 w-5 shrink-0 text-[var(--primary)]" strokeWidth={1.9} />
           <p>
-            이번 단계에서는 실제 정산 계산, 지급 처리, DB/API 연동 없이 UI와 mock data만 구현했습니다.
-            상세보기 모달의 버튼은 모두 안내용 alert만 표시합니다.
+            현재 화면은 `expense_requests` 실데이터를 기준으로 월말 정산 집계만 제공하며, 실제 정산 확정, 지급 처리, monthly_settlements 저장은 다음 단계에서 연결할 예정입니다.
           </p>
         </div>
       </section>

@@ -20,6 +20,7 @@ import type {
   PaymentMethod,
   SettlementRequestOption,
 } from "@/types";
+import type { DbAttachmentFileType } from "@/utils/expenseRequests";
 
 type ProjectOptionRow = {
   id: string;
@@ -40,11 +41,15 @@ type TemporaryUserRow = {
   is_active: boolean;
 };
 
-type TemporaryUserSource = "employee" | "fallback_profile";
-
 type SelectOption = {
   value: string;
   label: string;
+};
+
+type PendingAttachmentFile = {
+  id: string;
+  category: AttachmentCategory;
+  file: File;
 };
 
 type ExpenseRequestInsertPayload = {
@@ -77,45 +82,70 @@ type SubmitResult =
       message: string;
       requestNo: string;
       createdId: string;
-      userId: string;
-      projectId: string;
-      categoryId: string;
-      checkedAt: string;
     }
   | {
       status: "error";
       message: string;
-      code: string | null;
-      details: string | null;
-      hint: string | null;
-      checkedAt: string;
     };
 
-type SupabaseErrorDetails = {
+type AttachmentSelectionState = {
+  tone: "info" | "warning" | "error";
   message: string;
-  code: string | null;
-  details: string | null;
-  hint: string | null;
+  details?: string[];
 };
 
-type SubmitDebugState = {
-  handleSubmitStarted: boolean;
-  submitCount: number;
-  validationPassed: boolean | null;
-  validationFailedFields: string[];
-  selectedProjectId: string | null;
-  selectedProjectLabel: string | null;
-  selectedCategoryId: string | null;
-  selectedCategoryLabel: string | null;
-  temporaryUserId: string | null;
-  temporaryUserSource: TemporaryUserSource | null;
-  insertPayload: ExpenseRequestInsertPayload | null;
-  insertAttempted: boolean;
-  insertSucceeded: boolean | null;
-  insertedRow: InsertedExpenseRequestRow | null;
-  error: SupabaseErrorDetails | null;
-  lastStep: string;
-  checkedAt: string | null;
+type AttachmentUploadState = {
+  phase: "uploading" | "success" | "partial" | "error";
+  message: string;
+  uploadedCount: number;
+  failedCount: number;
+  details?: string[];
+  checkedAt: string;
+};
+
+type AttachmentUploadResult = {
+  phase: "success" | "partial" | "error";
+  uploadedCount: number;
+  failedCount: number;
+  details: string[];
+};
+
+type ExpenseAttachmentInsertPayload = {
+  expense_request_id: string;
+  file_type: DbAttachmentFileType;
+  file_name: string;
+  file_path: string;
+  uploaded_by: string;
+};
+
+type SupabaseErrorLike = {
+  message: string;
+};
+
+const expenseEvidenceBucketName = "expense-evidence";
+const maxAttachmentFileSizeBytes = 10 * 1024 * 1024;
+const allowedAttachmentExtensions = new Set(["jpg", "jpeg", "png", "pdf"]);
+
+const requiredFieldMessages: Record<ExpenseRequestFieldKey, string> = {
+  title: "경비 제목을 입력해주세요.",
+  expenseType: "경비 유형을 선택해주세요.",
+  usedDate: "사용일을 선택해주세요.",
+  purpose: "사용 목적을 입력해주세요.",
+  relatedProject: "관련 업무/프로젝트를 선택해주세요.",
+  amount: "사용 금액을 입력해주세요.",
+  merchantName: "사용처를 입력해주세요.",
+  paymentMethod: "결제 수단을 선택해주세요.",
+  settlementRequest: "정산 요청 여부를 선택해주세요.",
+};
+
+const paymentMethodValueMap: Record<
+  PaymentMethod,
+  "personal_card" | "corporate_card" | "cash" | "bank_transfer"
+> = {
+  개인카드: "personal_card",
+  법인카드: "corporate_card",
+  현금: "cash",
+  계좌이체: "bank_transfer",
 };
 
 function createInitialAttachments(): Record<AttachmentCategory, string[]> {
@@ -146,40 +176,6 @@ function createInitialFormData(): ExpenseRequestFormData {
   };
 }
 
-function createInitialDebugState(): SubmitDebugState {
-  return {
-    handleSubmitStarted: false,
-    submitCount: 0,
-    validationPassed: null,
-    validationFailedFields: [],
-    selectedProjectId: null,
-    selectedProjectLabel: null,
-    selectedCategoryId: null,
-    selectedCategoryLabel: null,
-    temporaryUserId: null,
-    temporaryUserSource: null,
-    insertPayload: null,
-    insertAttempted: false,
-    insertSucceeded: null,
-    insertedRow: null,
-    error: null,
-    lastStep: "대기 중",
-    checkedAt: null,
-  };
-}
-
-const requiredFieldMessages: Record<ExpenseRequestFieldKey, string> = {
-  title: "경비 제목을 입력해주세요.",
-  expenseType: "경비 유형을 선택해주세요.",
-  usedDate: "사용일을 선택해주세요.",
-  purpose: "사용 목적을 입력해주세요.",
-  relatedProject: "관련 업무/프로젝트를 선택해주세요.",
-  amount: "사용 금액을 입력해주세요.",
-  merchantName: "사용처를 입력해주세요.",
-  paymentMethod: "결제 수단을 선택해주세요.",
-  settlementRequest: "정산 요청 여부를 선택해주세요.",
-};
-
 function getDefaultSettlementRequest(
   paymentMethod: PaymentMethod | "",
 ): SettlementRequestOption | "" {
@@ -192,10 +188,6 @@ function getDefaultSettlementRequest(
   }
 
   return "";
-}
-
-function countAttachments(formData: ExpenseRequestFormData) {
-  return Object.values(formData.attachments).reduce((count, files) => count + files.length, 0);
 }
 
 function validateForm(formData: ExpenseRequestFormData) {
@@ -216,15 +208,9 @@ function validateForm(formData: ExpenseRequestFormData) {
   return nextErrors;
 }
 
-const paymentMethodValueMap: Record<
-  PaymentMethod,
-  "personal_card" | "corporate_card" | "cash" | "bank_transfer"
-> = {
-  개인카드: "personal_card",
-  법인카드: "corporate_card",
-  현금: "cash",
-  계좌이체: "bank_transfer",
-};
+function countAttachments(formData: ExpenseRequestFormData) {
+  return Object.values(formData.attachments).reduce((count, files) => count + files.length, 0);
+}
 
 function createRequestNumber() {
   const now = new Date();
@@ -237,63 +223,172 @@ function createRequestNumber() {
 }
 
 function normalizeOptionalText(value: string) {
-  return value.trim();
+  const trimmedValue = value.trim();
+  return trimmedValue.length > 0 ? trimmedValue : undefined;
 }
 
-function getSupabaseErrorDetails(error: unknown): SupabaseErrorDetails {
-  if (typeof error === "object" && error !== null) {
-    const message =
-      "message" in error && typeof error.message === "string"
-        ? error.message
-        : "알 수 없는 오류가 발생했습니다.";
-    const code = "code" in error && typeof error.code === "string" ? error.code : null;
-    const details =
-      "details" in error && typeof error.details === "string" ? error.details : null;
-    const hint = "hint" in error && typeof error.hint === "string" ? error.hint : null;
+function getUserFacingErrorMessage(error: unknown, fallbackMessage: string) {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = error.message;
 
-    return {
-      message,
-      code,
-      details,
-      hint,
-    };
+    if (typeof message === "string" && message.trim().length > 0) {
+      return message;
+    }
   }
 
-  return {
-    message: error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다.",
-    code: null,
-    details: null,
-    hint: null,
-  };
+  return fallbackMessage;
 }
 
-function buildValidationDebugMessage(validationErrors: ExpenseRequestErrors) {
-  const failedFields = Object.entries(validationErrors).map(
-    ([field, message]) => `${field}: ${message}`,
-  );
+function getAttachmentFileExtension(fileName: string) {
+  const fileNameParts = fileName.toLowerCase().split(".");
+  return fileNameParts.length > 1 ? fileNameParts[fileNameParts.length - 1] : "";
+}
 
-  return failedFields.join("\n");
+function normalizeStorageFileName(fileName: string) {
+  const normalized = fileName.replace(/[\\/\u0000-\u001f\u007f]/g, "_").trim();
+  return normalized.length > 0 ? normalized : `expense-evidence-${Date.now()}`;
+}
+
+function mapAttachmentCategoryToDbFileType(category: AttachmentCategory): DbAttachmentFileType {
+  switch (category) {
+    case "영수증":
+      return "receipt";
+    case "카드전표":
+      return "card_slip";
+    case "현금영수증":
+      return "cash_receipt";
+    case "간이영수증":
+      return "simple_receipt";
+    case "교통비 증빙":
+      return "transport_receipt";
+    case "기타 증빙":
+    default:
+      return "other";
+  }
+}
+
+async function resolveTemporaryUser() {
+  const supabase = getSupabaseBrowserClient();
+
+  const [employeeResult, fallbackProfileResult] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select("id, name, role, is_active")
+      .eq("role", "employee")
+      .eq("is_active", true)
+      .order("created_at", { ascending: true })
+      .limit(1),
+    supabase
+      .from("profiles")
+      .select("id, name, role, is_active")
+      .order("created_at", { ascending: true })
+      .limit(1),
+  ]);
+
+  if (employeeResult.error) {
+    throw employeeResult.error;
+  }
+
+  if (fallbackProfileResult.error) {
+    throw fallbackProfileResult.error;
+  }
+
+  return employeeResult.data?.[0] ?? fallbackProfileResult.data?.[0] ?? null;
+}
+
+async function uploadEvidenceAttachments({
+  expenseRequestId,
+  uploadedBy,
+  attachments,
+}: {
+  expenseRequestId: string;
+  uploadedBy: string;
+  attachments: PendingAttachmentFile[];
+}): Promise<AttachmentUploadResult> {
+  const supabase = getSupabaseBrowserClient();
+  const details: string[] = [];
+  let uploadedCount = 0;
+  let statusUpdateFailed = false;
+
+  for (const attachment of attachments) {
+    const safeFileName = normalizeStorageFileName(attachment.file.name);
+    const filePath = `expense-requests/${expenseRequestId}/${safeFileName}`;
+
+    const { error: storageError } = await supabase.storage
+      .from(expenseEvidenceBucketName)
+      .upload(filePath, attachment.file, {
+        cacheControl: "3600",
+        upsert: false,
+        contentType: attachment.file.type || undefined,
+      });
+
+    if (storageError) {
+      details.push(`[${attachment.file.name}] 파일 업로드에 실패했습니다.`);
+      continue;
+    }
+
+    const attachmentPayload: ExpenseAttachmentInsertPayload = {
+      expense_request_id: expenseRequestId,
+      file_type: mapAttachmentCategoryToDbFileType(attachment.category),
+      file_name: attachment.file.name,
+      file_path: filePath,
+      uploaded_by: uploadedBy,
+    };
+
+    const { error: attachmentInsertError } = await supabase
+      .from("expense_attachments")
+      .insert(attachmentPayload);
+
+    if (attachmentInsertError) {
+      details.push(`[${attachment.file.name}] 첨부 정보 저장에 실패했습니다.`);
+      await supabase.storage.from(expenseEvidenceBucketName).remove([filePath]);
+      continue;
+    }
+
+    uploadedCount += 1;
+  }
+
+  if (uploadedCount > 0) {
+    const { error: evidenceStatusUpdateError } = await supabase
+      .from("expense_requests")
+      .update({ evidence_status: "attached" })
+      .eq("id", expenseRequestId);
+
+    statusUpdateFailed = Boolean(evidenceStatusUpdateError);
+
+    if (statusUpdateFailed) {
+      details.push("증빙 상태 업데이트에 실패했습니다.");
+    }
+  }
+
+  const failedCount = attachments.length - uploadedCount + (statusUpdateFailed ? 1 : 0);
+
+  return {
+    phase: failedCount === 0 ? "success" : uploadedCount > 0 ? "partial" : "error",
+    uploadedCount,
+    failedCount,
+    details,
+  };
 }
 
 export default function ExpenseRequestPage() {
   const router = useRouter();
-  const [formData, setFormData] = useState<ExpenseRequestFormData>(() =>
-    createInitialFormData(),
-  );
+  const [formData, setFormData] = useState<ExpenseRequestFormData>(() => createInitialFormData());
   const [errors, setErrors] = useState<ExpenseRequestErrors>({});
   const [projectOptions, setProjectOptions] = useState<ProjectOptionRow[]>([]);
   const [expenseCategoryOptions, setExpenseCategoryOptions] = useState<
     ExpenseCategoryOptionRow[]
   >([]);
   const [temporaryUserPreview, setTemporaryUserPreview] = useState<TemporaryUserRow | null>(null);
-  const [temporaryUserPreviewSource, setTemporaryUserPreviewSource] =
-    useState<TemporaryUserSource | null>(null);
+  const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<PendingAttachmentFile[]>([]);
+  const [attachmentSelectionState, setAttachmentSelectionState] =
+    useState<AttachmentSelectionState | null>(null);
+  const [attachmentUploadState, setAttachmentUploadState] = useState<AttachmentUploadState | null>(
+    null,
+  );
   const [referenceLoading, setReferenceLoading] = useState(true);
   const [referenceError, setReferenceError] = useState<string | null>(null);
   const [submitResult, setSubmitResult] = useState<SubmitResult | null>(null);
-  const [submitDebugState, setSubmitDebugState] = useState<SubmitDebugState>(() =>
-    createInitialDebugState(),
-  );
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
@@ -304,20 +399,15 @@ export default function ExpenseRequestPage() {
       setReferenceError(null);
 
       if (!isSupabaseConfigured) {
-        if (!isMounted) {
-          return;
+        if (isMounted) {
+          setReferenceError("Supabase 연결 정보가 설정되지 않았습니다.");
+          setReferenceLoading(false);
         }
-
-        setReferenceError(
-          "Supabase 환경변수가 설정되지 않았습니다. NEXT_PUBLIC_SUPABASE_URL 및 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY를 확인해주세요.",
-        );
-        setReferenceLoading(false);
         return;
       }
 
       try {
         const supabase = getSupabaseBrowserClient();
-
         const [projectsResult, categoriesResult, employeeResult, fallbackProfileResult] =
           await Promise.all([
             supabase
@@ -348,60 +438,24 @@ export default function ExpenseRequestPage() {
           return;
         }
 
-        const messages: string[] = [];
-
-        if (projectsResult.error) {
-          messages.push(`[projects] ${projectsResult.error.message}`);
-        } else {
-          setProjectOptions(projectsResult.data ?? []);
-        }
-
-        if (categoriesResult.error) {
-          messages.push(`[expense_categories] ${categoriesResult.error.message}`);
-        } else {
-          setExpenseCategoryOptions(categoriesResult.data ?? []);
-        }
-
-        if (employeeResult.error) {
-          messages.push(`[profiles:employee] ${employeeResult.error.message}`);
-        }
-
-        if (fallbackProfileResult.error) {
-          messages.push(`[profiles:fallback] ${fallbackProfileResult.error.message}`);
-        }
-
-        if (!employeeResult.error || !fallbackProfileResult.error) {
-          const employee = employeeResult.data?.[0] ?? null;
-          const fallbackProfile = fallbackProfileResult.data?.[0] ?? null;
-          const resolvedTemporaryUser = employee ?? fallbackProfile;
-          const resolvedSource: TemporaryUserSource | null = employee
-            ? "employee"
-            : fallbackProfile
-              ? "fallback_profile"
-              : null;
-
-          if (!resolvedTemporaryUser || !resolvedSource) {
-            messages.push(
-              "[profiles] 임시 제출에 사용할 프로필을 찾을 수 없습니다. employee 또는 첫 번째 profiles row가 필요합니다.",
-            );
-          } else {
-            setTemporaryUserPreview(resolvedTemporaryUser);
-            setTemporaryUserPreviewSource(resolvedSource);
-          }
-        }
-
-        if (messages.length > 0) {
-          setReferenceError(messages.join("\n"));
-        }
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다.";
-
-        if (!isMounted) {
+        if (projectsResult.error || categoriesResult.error) {
+          setReferenceError("기준 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
           return;
         }
 
-        setReferenceError(message);
+        setProjectOptions(projectsResult.data ?? []);
+        setExpenseCategoryOptions(categoriesResult.data ?? []);
+
+        const previewUser =
+          employeeResult.data?.[0] ??
+          fallbackProfileResult.data?.[0] ??
+          null;
+
+        setTemporaryUserPreview(previewUser);
+      } catch {
+        if (isMounted) {
+          setReferenceError("기준 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
+        }
       } finally {
         if (isMounted) {
           setReferenceLoading(false);
@@ -434,19 +488,16 @@ export default function ExpenseRequestPage() {
     [expenseCategoryOptions],
   );
 
-  const selectedProject = useMemo(
-    () => projectOptions.find((project) => project.id === formData.relatedProject) ?? null,
+  const selectedProjectLabel = useMemo(
+    () => projectOptions.find((project) => project.id === formData.relatedProject)?.name ?? "",
     [formData.relatedProject, projectOptions],
   );
 
-  const selectedCategory = useMemo(
+  const selectedExpenseTypeLabel = useMemo(
     () =>
-      expenseCategoryOptions.find((category) => category.id === formData.expenseType) ?? null,
+      expenseCategoryOptions.find((category) => category.id === formData.expenseType)?.name ?? "",
     [expenseCategoryOptions, formData.expenseType],
   );
-
-  const selectedProjectLabel = selectedProject?.name ?? "";
-  const selectedExpenseTypeLabel = selectedCategory?.name ?? "";
 
   function updateField<K extends keyof ExpenseRequestFormData>(
     field: K,
@@ -481,30 +532,93 @@ export default function ExpenseRequestPage() {
       };
     });
 
-    if (field in errors || field === "paymentMethod" || field === "settlementRequest") {
-      setErrors((current) => {
-        const nextErrors = { ...current };
+    setErrors((current) => {
+      const nextErrors = { ...current };
 
-        if (field === "paymentMethod") {
-          delete nextErrors.paymentMethod;
-          delete nextErrors.settlementRequest;
-        } else {
-          delete nextErrors[field as ExpenseRequestFieldKey];
-        }
+      if (field === "paymentMethod") {
+        delete nextErrors.paymentMethod;
+        delete nextErrors.settlementRequest;
+      } else {
+        delete nextErrors[field as ExpenseRequestFieldKey];
+      }
 
-        return nextErrors;
-      });
-    }
+      return nextErrors;
+    });
   }
 
-  function handleAddAttachment(category: AttachmentCategory, fileNames: string[]) {
-    setFormData((current) => ({
-      ...current,
-      attachments: {
-        ...current.attachments,
-        [category]: [...current.attachments[category], ...fileNames],
-      },
-    }));
+  function handleAddAttachment(category: AttachmentCategory, files: File[]) {
+    setSubmitResult(null);
+    setAttachmentUploadState(null);
+
+    const acceptedItems: PendingAttachmentFile[] = [];
+    const acceptedFileNames: string[] = [];
+    const rejectedDetails: string[] = [];
+    const existingNames = new Set(
+      pendingAttachmentFiles.map((item) => item.file.name.toLowerCase()),
+    );
+
+    files.forEach((file, index) => {
+      const normalizedName = file.name.toLowerCase();
+      const extension = getAttachmentFileExtension(file.name);
+
+      if (existingNames.has(normalizedName)) {
+        rejectedDetails.push(`${file.name}: 동일한 파일명은 한 번만 첨부할 수 있습니다.`);
+        return;
+      }
+
+      if (!allowedAttachmentExtensions.has(extension)) {
+        rejectedDetails.push(`${file.name}: jpg, png, pdf 파일만 업로드할 수 있습니다.`);
+        return;
+      }
+
+      if (file.size > maxAttachmentFileSizeBytes) {
+        rejectedDetails.push(`${file.name}: 파일 크기는 10MB 이하여야 합니다.`);
+        return;
+      }
+
+      existingNames.add(normalizedName);
+      acceptedItems.push({
+        id: `${Date.now()}-${index}-${file.name}`,
+        category,
+        file,
+      });
+      acceptedFileNames.push(file.name);
+    });
+
+    if (acceptedItems.length > 0) {
+      setPendingAttachmentFiles((current) => [...current, ...acceptedItems]);
+      setFormData((current) => ({
+        ...current,
+        attachments: {
+          ...current.attachments,
+          [category]: [...current.attachments[category], ...acceptedFileNames],
+        },
+      }));
+    }
+
+    if (acceptedItems.length > 0 && rejectedDetails.length === 0) {
+      setAttachmentSelectionState({
+        tone: "info",
+        message: `${acceptedItems.length}개의 파일을 첨부 대기 목록에 추가했습니다.`,
+        details: acceptedFileNames,
+      });
+      return;
+    }
+
+    if (acceptedItems.length > 0) {
+      setAttachmentSelectionState({
+        tone: "warning",
+        message: `${acceptedItems.length}개의 파일은 추가했고 일부 파일은 제외했습니다.`,
+        details: rejectedDetails,
+      });
+      return;
+    }
+
+    setAttachmentSelectionState({
+      tone: "error",
+      message: "선택한 파일을 추가하지 못했습니다.",
+      details: rejectedDetails,
+    });
   }
 
   function handleCancel() {
@@ -512,95 +626,30 @@ export default function ExpenseRequestPage() {
   }
 
   function handleTemporarySave() {
-    window.alert("경비 내역이 임시 저장되었습니다.");
+    window.alert("경비 작성 내용이 임시 저장되었습니다.");
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    const submitStartedAt = new Date().toISOString();
-
-    console.log("[ExpenseRequestPage] step: handleSubmit start", {
-      formData,
-      referenceLoading,
-      referenceError,
-      selectedProjectId: formData.relatedProject,
-      selectedCategoryId: formData.expenseType,
-      temporaryUserPreviewId: temporaryUserPreview?.id ?? null,
-    });
-
     setSubmitResult(null);
-    setSubmitDebugState((current) => ({
-      ...createInitialDebugState(),
-      handleSubmitStarted: true,
-      submitCount: current.submitCount + 1,
-      selectedProjectId: formData.relatedProject || null,
-      selectedProjectLabel: selectedProject?.name ?? null,
-      selectedCategoryId: formData.expenseType || null,
-      selectedCategoryLabel: selectedCategory?.name ?? null,
-      temporaryUserId: temporaryUserPreview?.id ?? null,
-      temporaryUserSource: temporaryUserPreviewSource,
-      lastStep: "handleSubmit 시작",
-      checkedAt: submitStartedAt,
-    }));
+    setAttachmentUploadState(null);
 
     const validationErrors = validateForm(formData);
     setErrors(validationErrors);
 
-    console.log("[ExpenseRequestPage] step: validation result", validationErrors);
-
     if (Object.keys(validationErrors).length > 0) {
-      const validationFailureFields = Object.keys(validationErrors);
-      const validationMessage = buildValidationDebugMessage(validationErrors);
-
-      console.warn("[ExpenseRequestPage] step: validation blocked submit", validationErrors);
-
       setSubmitResult({
         status: "error",
-        message: "필수 입력값을 확인해주세요.",
-        code: "VALIDATION_ERROR",
-        details: validationMessage,
-        hint: "표시된 입력 오류를 수정한 뒤 다시 제출해주세요.",
-        checkedAt: new Date().toISOString(),
+        message: "필수 입력 항목을 확인해주세요.",
       });
-      setSubmitDebugState((current) => ({
-        ...current,
-        validationPassed: false,
-        validationFailedFields: validationFailureFields,
-        lastStep: "validation 실패",
-        checkedAt: new Date().toISOString(),
-      }));
       return;
     }
-
-    setSubmitDebugState((current) => ({
-      ...current,
-      validationPassed: true,
-      validationFailedFields: [],
-      lastStep: "validation 통과",
-      checkedAt: new Date().toISOString(),
-    }));
 
     if (referenceLoading) {
       setSubmitResult({
         status: "error",
-        message: "프로젝트 및 경비 유형 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.",
-        code: "REFERENCE_LOADING",
-        details: null,
-        hint: "기준정보 로딩이 끝난 뒤 다시 제출해주세요.",
-        checkedAt: new Date().toISOString(),
+        message: "기준 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.",
       });
-      setSubmitDebugState((current) => ({
-        ...current,
-        lastStep: "기준정보 로딩 중",
-        error: {
-          message: "프로젝트 및 경비 유형 정보를 불러오는 중입니다.",
-          code: "REFERENCE_LOADING",
-          details: null,
-          hint: "기준정보 로딩이 끝난 뒤 다시 제출해주세요.",
-        },
-        checkedAt: new Date().toISOString(),
-      }));
       return;
     }
 
@@ -608,61 +657,24 @@ export default function ExpenseRequestPage() {
       setSubmitResult({
         status: "error",
         message: referenceError,
-        code: "REFERENCE_ERROR",
-        details: referenceError,
-        hint: "기준정보 조회 오류를 먼저 해결해주세요.",
-        checkedAt: new Date().toISOString(),
       });
-      setSubmitDebugState((current) => ({
-        ...current,
-        lastStep: "기준정보 오류",
-        error: {
-          message: referenceError,
-          code: "REFERENCE_ERROR",
-          details: referenceError,
-          hint: "기준정보 조회 오류를 먼저 해결해주세요.",
-        },
-        checkedAt: new Date().toISOString(),
-      }));
       return;
     }
 
     if (!isSupabaseConfigured) {
       setSubmitResult({
         status: "error",
-        message:
-          "Supabase 환경변수가 설정되지 않았습니다. NEXT_PUBLIC_SUPABASE_URL 및 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY를 확인해주세요.",
-        code: "SUPABASE_ENV_MISSING",
-        details: null,
-        hint: "환경변수를 확인한 뒤 다시 시도해주세요.",
-        checkedAt: new Date().toISOString(),
+        message: "Supabase 연결 정보가 설정되지 않았습니다.",
       });
-      setSubmitDebugState((current) => ({
-        ...current,
-        lastStep: "Supabase 환경변수 없음",
-        error: {
-          message:
-            "Supabase 환경변수가 설정되지 않았습니다. NEXT_PUBLIC_SUPABASE_URL 및 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY를 확인해주세요.",
-          code: "SUPABASE_ENV_MISSING",
-          details: null,
-          hint: "환경변수를 확인한 뒤 다시 시도해주세요.",
-        },
-        checkedAt: new Date().toISOString(),
-      }));
       return;
     }
 
     if (countAttachments(formData) === 0) {
       const shouldContinue = window.confirm(
-        "증빙자료가 첨부되지 않았습니다. 증빙이 없으면 승인 또는 정산이 보류될 수 있습니다. 그래도 승인 요청을 제출하시겠습니까?",
+        "증빙 자료가 첨부되지 않았습니다. 승인 또는 정산이 보류될 수 있습니다. 그래도 제출하시겠습니까?",
       );
 
       if (!shouldContinue) {
-        setSubmitDebugState((current) => ({
-          ...current,
-          lastStep: "사용자가 증빙 경고 확인 후 제출 취소",
-          checkedAt: new Date().toISOString(),
-        }));
         return;
       }
     }
@@ -671,86 +683,33 @@ export default function ExpenseRequestPage() {
 
     try {
       const supabase = getSupabaseBrowserClient();
-
-      console.log("[ExpenseRequestPage] step: resolve temporary user");
-
-      const [employeeResult, fallbackProfileResult] = await Promise.all([
-        supabase
-          .from("profiles")
-          .select("id, name, role, is_active")
-          .eq("role", "employee")
-          .eq("is_active", true)
-          .order("created_at", { ascending: true })
-          .limit(1),
-        supabase
-          .from("profiles")
-          .select("id, name, role, is_active")
-          .order("created_at", { ascending: true })
-          .limit(1),
-      ]);
-
-      if (employeeResult.error) {
-        console.error("[ExpenseRequestPage] employee query error", employeeResult.error);
-      }
-
-      if (fallbackProfileResult.error) {
-        console.error("[ExpenseRequestPage] fallback profile query error", fallbackProfileResult.error);
-      }
-
       const resolvedTemporaryUser =
-        employeeResult.data?.[0] ?? fallbackProfileResult.data?.[0] ?? null;
-      const resolvedTemporaryUserSource: TemporaryUserSource | null = employeeResult.data?.[0]
-        ? "employee"
-        : fallbackProfileResult.data?.[0]
-          ? "fallback_profile"
-          : null;
+        temporaryUserPreview ?? (await resolveTemporaryUser());
 
-      console.log("[ExpenseRequestPage] step: temporary user resolved", {
-        employeeResult: employeeResult.data?.[0] ?? null,
-        fallbackProfileResult: fallbackProfileResult.data?.[0] ?? null,
-        resolvedTemporaryUser,
-        resolvedTemporaryUserSource,
-      });
-
-      if (!resolvedTemporaryUser || !resolvedTemporaryUserSource) {
-        throw new Error(
-          "제출에 사용할 user_id를 찾을 수 없습니다. profiles 테이블에 employee 또는 최소 1개의 row가 필요합니다.",
-        );
+      if (!resolvedTemporaryUser?.id) {
+        throw { message: "임시 제출에 사용할 프로필을 찾지 못했습니다." } satisfies SupabaseErrorLike;
       }
 
-      setTemporaryUserPreview(resolvedTemporaryUser);
-      setTemporaryUserPreviewSource(resolvedTemporaryUserSource);
-      setSubmitDebugState((current) => ({
-        ...current,
-        temporaryUserId: resolvedTemporaryUser.id,
-        temporaryUserSource: resolvedTemporaryUserSource,
-        lastStep: "임시 employee user_id 조회 완료",
-        checkedAt: new Date().toISOString(),
-      }));
+      const selectedProject = projectOptions.find((project) => project.id === formData.relatedProject);
+      const selectedCategory = expenseCategoryOptions.find(
+        (category) => category.id === formData.expenseType,
+      );
 
-      const resolvedProject =
-        projectOptions.find((project) => project.id === formData.relatedProject) ?? null;
-      const resolvedCategory =
-        expenseCategoryOptions.find((category) => category.id === formData.expenseType) ?? null;
-
-      if (!resolvedProject || !resolvedCategory) {
-        throw new Error(
-          "선택한 project_id 또는 category_id를 기준정보에서 찾지 못했습니다. select option value가 uuid id인지 확인해주세요.",
-        );
+      if (!selectedProject || !selectedCategory) {
+        throw { message: "프로젝트 또는 경비 유형을 다시 선택해주세요." } satisfies SupabaseErrorLike;
       }
 
       const normalizedAmount = Number(formData.amount);
 
       if (!Number.isFinite(normalizedAmount)) {
-        throw new Error("amount를 숫자로 변환하지 못했습니다.");
+        throw { message: "사용 금액을 다시 확인해주세요." } satisfies SupabaseErrorLike;
       }
 
-      const requestNo = createRequestNumber();
       const insertPayload: ExpenseRequestInsertPayload = {
-        request_no: requestNo,
+        request_no: createRequestNumber(),
         user_id: resolvedTemporaryUser.id,
-        project_id: resolvedProject.id,
-        category_id: resolvedCategory.id,
+        project_id: selectedProject.id,
+        category_id: selectedCategory.id,
         title: formData.title.trim(),
         purpose: formData.purpose.trim(),
         expense_date: formData.usedDate,
@@ -774,105 +733,79 @@ export default function ExpenseRequestPage() {
         insertPayload.memo = memo;
       }
 
-      console.log("[ExpenseRequestPage] step: insert payload generated", insertPayload);
-
-      setSubmitDebugState((current) => ({
-        ...current,
-        selectedProjectId: resolvedProject.id,
-        selectedProjectLabel: resolvedProject.name,
-        selectedCategoryId: resolvedCategory.id,
-        selectedCategoryLabel: resolvedCategory.name,
-        temporaryUserId: resolvedTemporaryUser.id,
-        temporaryUserSource: resolvedTemporaryUserSource,
-        insertPayload,
-        lastStep: "insert payload 생성 완료",
-        checkedAt: new Date().toISOString(),
-      }));
-
-      console.log("[ExpenseRequestPage] step: supabase insert execute");
-
-      setSubmitDebugState((current) => ({
-        ...current,
-        insertAttempted: true,
-        lastStep: "supabase insert 실행",
-        checkedAt: new Date().toISOString(),
-      }));
-
       const { data, error } = await supabase
         .from("expense_requests")
         .insert(insertPayload)
-        .select()
+        .select("id, request_no")
         .single();
 
-      console.log("[ExpenseRequestPage] step: insert result", {
-        data,
-        error: error
-          ? {
-              message: error.message,
-              code: error.code,
-              details: error.details,
-              hint: error.hint,
-            }
-          : null,
-      });
-
-      if (error) {
-        throw error;
+      if (error || !data) {
+        throw error ?? { message: "경비 요청 저장에 실패했습니다." };
       }
 
-      if (!data || typeof data !== "object") {
-        throw new Error("insert는 실행되었지만 생성된 row 데이터를 반환받지 못했습니다.");
-      }
+      const insertedRow = data as InsertedExpenseRequestRow;
+      let successMessage = "경비 승인 요청이 제출되었습니다.";
 
-      const insertedRow: InsertedExpenseRequestRow = {
-        id: String((data as { id?: string }).id ?? ""),
-        request_no: String((data as { request_no?: string }).request_no ?? ""),
-      };
+      if (pendingAttachmentFiles.length > 0) {
+        const startedAt = new Date().toISOString();
 
-      if (!insertedRow.id || !insertedRow.request_no) {
-        throw new Error("생성된 row의 id 또는 request_no가 비어 있습니다.");
+        setAttachmentUploadState({
+          phase: "uploading",
+          message: `증빙 파일 ${pendingAttachmentFiles.length}건을 업로드하고 있습니다.`,
+          uploadedCount: 0,
+          failedCount: 0,
+          checkedAt: startedAt,
+        });
+
+        const uploadResult = await uploadEvidenceAttachments({
+          expenseRequestId: insertedRow.id,
+          uploadedBy: resolvedTemporaryUser.id,
+          attachments: pendingAttachmentFiles,
+        });
+
+        const checkedAt = new Date().toISOString();
+        const uploadMessage =
+          uploadResult.phase === "success"
+            ? `증빙 파일 ${uploadResult.uploadedCount}건 업로드를 완료했습니다.`
+            : uploadResult.phase === "partial"
+              ? "증빙 파일 일부만 업로드되었습니다. 누락된 파일을 다시 확인해주세요."
+              : "증빙 파일 업로드에 실패했습니다.";
+
+        setAttachmentUploadState({
+          phase: uploadResult.phase,
+          message: uploadMessage,
+          uploadedCount: uploadResult.uploadedCount,
+          failedCount: uploadResult.failedCount,
+          details: uploadResult.details,
+          checkedAt,
+        });
+
+        successMessage =
+          uploadResult.phase === "success"
+            ? "경비 승인 요청이 제출되었고 증빙 파일 업로드도 완료되었습니다."
+            : uploadResult.phase === "partial"
+              ? "경비 승인 요청은 제출되었고 증빙 파일 일부만 업로드되었습니다."
+              : "경비 승인 요청은 제출되었지만 증빙 파일 업로드에는 실패했습니다.";
       }
 
       setFormData(createInitialFormData());
+      setPendingAttachmentFiles([]);
+      setAttachmentSelectionState(null);
       setErrors({});
       setSubmitResult({
         status: "success",
-        message: "경비 승인 요청이 제출되었습니다.",
+        message: successMessage,
         requestNo: insertedRow.request_no,
         createdId: insertedRow.id,
-        userId: resolvedTemporaryUser.id,
-        projectId: resolvedProject.id,
-        categoryId: resolvedCategory.id,
-        checkedAt: new Date().toISOString(),
       });
-      setSubmitDebugState((current) => ({
-        ...current,
-        insertSucceeded: true,
-        insertedRow,
-        error: null,
-        lastStep: "insert 성공",
-        checkedAt: new Date().toISOString(),
-      }));
     } catch (error) {
-      const errorDetails = getSupabaseErrorDetails(error);
-
-      console.error("[ExpenseRequestPage] step: insert exception", errorDetails);
-
       setSubmitResult({
         status: "error",
-        message: errorDetails.message,
-        code: errorDetails.code,
-        details: errorDetails.details,
-        hint: errorDetails.hint,
-        checkedAt: new Date().toISOString(),
+        message: getUserFacingErrorMessage(
+          error,
+          "경비 요청을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
+        ),
       });
-      setSubmitDebugState((current) => ({
-        ...current,
-        insertSucceeded: false,
-        error: errorDetails,
-        lastStep: "insert 실패",
-        checkedAt: new Date().toISOString(),
-      }));
     } finally {
       setIsSubmitting(false);
     }
@@ -882,7 +815,7 @@ export default function ExpenseRequestPage() {
     <div className="space-y-8">
       <PageHeader
         title="지출 기안 작성"
-        description="식대, 교통비, 출장비, 소모품비 등 회사 경비 사용 내역을 등록하고 승인 요청을 제출합니다."
+        description="식대, 교통비, 출장비, 소모품비 등 사내 경비 사용 내역을 등록하고 승인 요청을 제출합니다."
         roles={roleViews}
         activeRole="직원 보기"
         eyebrow="경비 등록"
@@ -891,48 +824,25 @@ export default function ExpenseRequestPage() {
 
       {referenceError ? (
         <section className="rounded-[1.75rem] border border-rose-200 bg-rose-50 px-5 py-4 text-sm leading-6 text-rose-700 shadow-sm">
-          <p className="font-semibold">Supabase 기준정보를 불러오지 못했습니다.</p>
-          <p className="mt-2 whitespace-pre-wrap break-words">{referenceError}</p>
+          <p className="font-semibold">기준 정보를 불러오지 못했습니다.</p>
+          <p className="mt-2">{referenceError}</p>
         </section>
       ) : null}
 
       {submitResult?.status === "success" ? (
         <section className="rounded-[1.75rem] border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm leading-6 text-emerald-800 shadow-sm">
-          <p className="font-semibold">저장이 완료되었습니다.</p>
+          <p className="font-semibold">제출이 완료되었습니다.</p>
           <p className="mt-2">{submitResult.message}</p>
           <p className="mt-2">
-            생성된 요청번호: <span className="font-semibold">{submitResult.requestNo}</span>
+            요청번호: <span className="font-semibold">{submitResult.requestNo}</span>
           </p>
-          <p>
-            생성된 row id: <span className="font-semibold">{submitResult.createdId}</span>
-          </p>
-          <p>
-            user_id / project_id / category_id:
-            {" "}
-            <span className="font-semibold">
-              {submitResult.userId} / {submitResult.projectId} / {submitResult.categoryId}
-            </span>
-          </p>
-          <p>조회 시각: {submitResult.checkedAt}</p>
         </section>
       ) : null}
 
       {submitResult?.status === "error" ? (
         <section className="rounded-[1.75rem] border border-rose-200 bg-rose-50 px-5 py-4 text-sm leading-6 text-rose-700 shadow-sm">
-          <p className="font-semibold">저장에 실패했습니다.</p>
-          <p className="mt-2 whitespace-pre-wrap break-words">
-            error.message: {submitResult.message}
-          </p>
-          <p className="mt-1 whitespace-pre-wrap break-words">
-            error.code: {submitResult.code ?? "(없음)"}
-          </p>
-          <p className="mt-1 whitespace-pre-wrap break-words">
-            error.details: {submitResult.details ?? "(없음)"}
-          </p>
-          <p className="mt-1 whitespace-pre-wrap break-words">
-            error.hint: {submitResult.hint ?? "(없음)"}
-          </p>
-          <p className="mt-1">조회 시각: {submitResult.checkedAt}</p>
+          <p className="font-semibold">제출에 실패했습니다.</p>
+          <p className="mt-2">{submitResult.message}</p>
         </section>
       ) : null}
 
@@ -943,14 +853,16 @@ export default function ExpenseRequestPage() {
           expenseTypeOptions={expenseTypeSelectOptions}
           relatedWorkOptions={projectSelectOptions}
           attachmentCategories={attachmentCategories}
+          isReferenceLoading={referenceLoading}
+          isSubmitting={isSubmitting}
+          selectedExpenseTypeLabel={selectedExpenseTypeLabel}
+          attachmentSelectionState={attachmentSelectionState}
+          attachmentUploadState={attachmentUploadState}
           onFieldChange={updateField}
           onAddAttachment={handleAddAttachment}
           onCancel={handleCancel}
           onTemporarySave={handleTemporarySave}
           onSubmit={handleSubmit}
-          isReferenceLoading={referenceLoading}
-          isSubmitting={isSubmitting}
-          selectedExpenseTypeLabel={selectedExpenseTypeLabel}
         />
 
         <ExpenseGuidePanel
@@ -958,167 +870,6 @@ export default function ExpenseRequestPage() {
           expenseTypeLabel={selectedExpenseTypeLabel}
           relatedProjectLabel={selectedProjectLabel}
         />
-      </section>
-
-      <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-          <div>
-            <h3 className="text-lg font-semibold text-slate-950">제출 디버그 패널</h3>
-            <p className="mt-1 text-sm text-slate-500">
-              승인 요청 제출 과정 전체를 화면에서 바로 확인할 수 있도록 단계별 상태를 표시합니다.
-            </p>
-          </div>
-          <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
-            마지막 단계: {submitDebugState.lastStep}
-          </span>
-        </div>
-
-        <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-              handleSubmit 실행 여부
-            </p>
-            <p className="mt-2 text-sm font-semibold text-slate-900">
-              {submitDebugState.handleSubmitStarted ? "실행됨" : "미실행"}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              제출 시도 횟수: {submitDebugState.submitCount}회
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-              validation 통과 여부
-            </p>
-            <p className="mt-2 text-sm font-semibold text-slate-900">
-              {submitDebugState.validationPassed === null
-                ? "아직 확인 전"
-                : submitDebugState.validationPassed
-                  ? "통과"
-                  : "실패"}
-            </p>
-            <p className="mt-1 whitespace-pre-wrap break-words text-xs text-slate-500">
-              실패 필드:{" "}
-              {submitDebugState.validationFailedFields.length > 0
-                ? submitDebugState.validationFailedFields.join(", ")
-                : "(없음)"}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-              임시 user_id
-            </p>
-            <p className="mt-2 break-all text-sm font-semibold text-slate-900">
-              {submitDebugState.temporaryUserId ?? "(없음)"}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              source: {submitDebugState.temporaryUserSource ?? "(없음)"}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-              선택된 project_id
-            </p>
-            <p className="mt-2 break-all text-sm font-semibold text-slate-900">
-              {submitDebugState.selectedProjectId ?? "(없음)"}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              {submitDebugState.selectedProjectLabel ?? "(라벨 없음)"}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-              선택된 category_id
-            </p>
-            <p className="mt-2 break-all text-sm font-semibold text-slate-900">
-              {submitDebugState.selectedCategoryId ?? "(없음)"}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              {submitDebugState.selectedCategoryLabel ?? "(라벨 없음)"}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-              insert 성공 여부
-            </p>
-            <p className="mt-2 text-sm font-semibold text-slate-900">
-              {submitDebugState.insertSucceeded === null
-                ? "아직 확인 전"
-                : submitDebugState.insertSucceeded
-                  ? "성공"
-                  : "실패"}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              insert 실행 여부: {submitDebugState.insertAttempted ? "실행됨" : "미실행"}
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-5 grid gap-4 xl:grid-cols-2">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-              insert 성공 결과
-            </p>
-            <p className="mt-2 break-all text-sm text-slate-700">
-              row id:{" "}
-              <span className="font-semibold text-slate-900">
-                {submitDebugState.insertedRow?.id ?? "(없음)"}
-              </span>
-            </p>
-            <p className="mt-1 break-all text-sm text-slate-700">
-              request_no:{" "}
-              <span className="font-semibold text-slate-900">
-                {submitDebugState.insertedRow?.request_no ?? "(없음)"}
-              </span>
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-              insert 실패 정보
-            </p>
-            <p className="mt-2 whitespace-pre-wrap break-words text-sm text-slate-700">
-              error.message:{" "}
-              <span className="font-semibold text-slate-900">
-                {submitDebugState.error?.message ?? "(없음)"}
-              </span>
-            </p>
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-700">
-              error.code:{" "}
-              <span className="font-semibold text-slate-900">
-                {submitDebugState.error?.code ?? "(없음)"}
-              </span>
-            </p>
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-700">
-              error.details:{" "}
-              <span className="font-semibold text-slate-900">
-                {submitDebugState.error?.details ?? "(없음)"}
-              </span>
-            </p>
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-700">
-              error.hint:{" "}
-              <span className="font-semibold text-slate-900">
-                {submitDebugState.error?.hint ?? "(없음)"}
-              </span>
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-950 px-4 py-4 text-sm text-slate-100">
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <p className="font-semibold">insert payload raw JSON</p>
-            <p className="text-xs text-slate-400">
-              updated at: {submitDebugState.checkedAt ?? "(없음)"}
-            </p>
-          </div>
-          <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-all text-xs leading-6 text-slate-200">
-            {JSON.stringify(submitDebugState.insertPayload, null, 2) ?? "null"}
-          </pre>
-        </div>
       </section>
     </div>
   );

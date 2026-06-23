@@ -118,6 +118,7 @@ type ExpenseRequestHistoryRow = {
     | "on_hold";
   evidence_status: "none" | "attached";
   requested_at: string;
+  created_at: string;
   requester: ExpenseHistoryRequesterRelation[];
   project: ExpenseHistoryProjectRelation[];
   category: ExpenseHistoryCategoryRelation[];
@@ -218,6 +219,7 @@ function mapExpenseRequestToHistoryRecord(
   const requester = row.requester[0] ?? null;
   const project = row.project[0] ?? null;
   const category = row.category[0] ?? null;
+  const requestedAtValue = row.requested_at || row.created_at;
 
   return {
     id: row.id,
@@ -231,7 +233,7 @@ function mapExpenseRequestToHistoryRecord(
     settlementRequest: mapSettlementRequest(row.settlement_requested),
     status: mapExpenseStatus(row.status),
     attachmentStatus: mapAttachmentStatus(row.evidence_status),
-    requestedAt: formatDateOnly(row.requested_at),
+    requestedAt: formatDateOnly(requestedAtValue),
     requesterName: requester?.name ?? "임시 사용자",
     requesterDepartment: requester?.department ?? "-",
     projectName: project?.name ?? "미지정 프로젝트",
@@ -310,6 +312,7 @@ export default function ExpenseHistoryPage() {
               status,
               evidence_status,
               requested_at,
+              created_at,
               requester:profiles!expense_requests_user_id_fkey (
                 id,
                 name,
@@ -330,7 +333,8 @@ export default function ExpenseHistoryPage() {
             `,
           )
           .eq("user_id", employee.id)
-          .order("requested_at", { ascending: false });
+          .order("requested_at", { ascending: false })
+          .order("created_at", { ascending: false });
 
         if (expenseRequestsResult.error) {
           throw expenseRequestsResult.error;

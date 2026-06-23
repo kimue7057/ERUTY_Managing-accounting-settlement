@@ -23,11 +23,24 @@ type ExpenseRequestFormProps = {
   isReferenceLoading?: boolean;
   isSubmitting?: boolean;
   selectedExpenseTypeLabel?: string;
+  attachmentSelectionState?: {
+    tone: "info" | "warning" | "error";
+    message: string;
+    details?: string[];
+  } | null;
+  attachmentUploadState?: {
+    phase: "uploading" | "success" | "partial" | "error";
+    message: string;
+    uploadedCount: number;
+    failedCount: number;
+    details?: string[];
+    checkedAt: string;
+  } | null;
   onFieldChange: <K extends keyof ExpenseRequestFormData>(
     field: K,
     value: ExpenseRequestFormData[K],
   ) => void;
-  onAddAttachment: (category: AttachmentCategory, fileNames: string[]) => void;
+  onAddAttachment: (category: AttachmentCategory, files: File[]) => void;
   onCancel: () => void;
   onTemporarySave: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -97,6 +110,8 @@ export function ExpenseRequestForm({
   isReferenceLoading = false,
   isSubmitting = false,
   selectedExpenseTypeLabel = "",
+  attachmentSelectionState = null,
+  attachmentUploadState = null,
   onFieldChange,
   onAddAttachment,
   onCancel,
@@ -349,6 +364,9 @@ export function ExpenseRequestForm({
           categories={attachmentCategories}
           attachments={formData.attachments}
           onAddFiles={onAddAttachment}
+          isDisabled={isSubmitting}
+          selectionState={attachmentSelectionState}
+          uploadState={attachmentUploadState}
         />
       </ExpenseFormSection>
 
