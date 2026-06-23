@@ -45,6 +45,7 @@ import {
   type DbExpenseStatus,
   type DbPaymentMethod,
 } from "@/utils/expenseRequests";
+import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 const roleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
 
@@ -309,21 +310,8 @@ function mapBaseRequestToDetailItem(
 }
 
 function getSupabaseErrorDetails(error: unknown): SaveErrorState {
-  if (typeof error === "object" && error !== null) {
-    return {
-      message:
-        "message" in error && typeof error.message === "string"
-          ? error.message
-          : "알 수 없는 오류가 발생했습니다.",
-      code: "code" in error && typeof error.code === "string" ? error.code : null,
-      details:
-        "details" in error && typeof error.details === "string" ? error.details : null,
-      hint: "hint" in error && typeof error.hint === "string" ? error.hint : null,
-    };
-  }
-
   return {
-    message: error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다.",
+    message: getUserFacingSupabaseMessage(error, "알 수 없는 오류가 발생했습니다."),
     code: null,
     details: null,
     hint: null,

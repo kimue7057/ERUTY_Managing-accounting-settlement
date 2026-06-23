@@ -35,6 +35,7 @@ import {
   type DbExpenseStatus,
   type DbPaymentMethod,
 } from "@/utils/expenseRequests";
+import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 const roleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
 
@@ -157,7 +158,7 @@ function getExpenseSettlementStatus(row: SettlementExpenseRow): MonthlySettlemen
 function getEmployeePayoutStatus(
   employee: Pick<
     MonthlySettlementEmployee,
-    "approvedAmount" | "missingProofAmount" | "finalPayoutAmount"
+    "approvedAmount" | "missingProofAmount" | "finalPayoutAmount" | "rejectedAmount"
   >,
 ): MonthlySettlementStatus {
   if (employee.missingProofAmount > 0) {
@@ -166,6 +167,10 @@ function getEmployeePayoutStatus(
 
   if (employee.finalPayoutAmount > 0) {
     return "지급대기";
+  }
+
+  if (employee.rejectedAmount > 0) {
+    return "보류";
   }
 
   return "정산대기";
@@ -352,10 +357,10 @@ export default function MonthlySettlementPage() {
         setEmployees(nextEmployees);
         setSummary(buildSummary(nextEmployees));
       } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "월말 정산 데이터를 불러오는 중 알 수 없는 오류가 발생했습니다.";
+        const message = getUserFacingSupabaseMessage(
+          error,
+          "월말 정산 데이터를 불러오는 중 알 수 없는 오류가 발생했습니다.",
+        );
 
         if (!isMounted) {
           return;
@@ -469,7 +474,7 @@ export default function MonthlySettlementPage() {
           <div>
             <h3 className="text-lg font-semibold text-slate-950">정산 대상 포함 기준</h3>
             <p className="mt-1 text-sm text-slate-500">
-              승인완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함하고, 법인카드 사용 건은 직원 지급 대상에서 제외합니다.
+              승인완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함하고, 증빙이 없는 건은 보류 금액으로 분류합니다. 법인카드 사용 건은 직원 지급 대상에서 제외합니다.
             </p>
           </div>
 
@@ -649,7 +654,7 @@ export default function MonthlySettlementPage() {
         ) : null}
 
         <div className="mt-5 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-4 text-sm leading-6 text-sky-800">
-          승인완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함됩니다. 법인카드 사용 건은 직원 지급 대상이 아닙니다.
+          승인완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함됩니다. 증빙이 미첨부된 건은 보류 금액으로 분류되며, 법인카드 사용 건은 직원 지급 대상이 아닙니다.
         </div>
       </section>
 

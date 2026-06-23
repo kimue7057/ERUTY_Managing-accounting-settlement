@@ -38,6 +38,7 @@ import {
   type DbExpenseStatus,
   type DbPaymentMethod,
 } from "@/utils/expenseRequests";
+import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 const roleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
 
@@ -140,15 +141,11 @@ export default function Home() {
       setLoadError(null);
 
       if (!isSupabaseConfigured) {
-        if (!isMounted) {
-          return;
+        if (isMounted) {
+          setLoadError("Supabase 연결 정보가 설정되지 않았습니다.");
+          setExpenseRequests([]);
+          setIsLoading(false);
         }
-
-        setLoadError(
-          "Supabase 환경변수가 설정되지 않았습니다. NEXT_PUBLIC_SUPABASE_URL과 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY를 확인해주세요.",
-        );
-        setExpenseRequests([]);
-        setIsLoading(false);
         return;
       }
 
@@ -196,16 +193,13 @@ export default function Home() {
 
         setExpenseRequests((data ?? []) as DashboardExpenseRequestRow[]);
       } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "대시보드 데이터를 불러오는 중 알 수 없는 오류가 발생했습니다.";
-
         if (!isMounted) {
           return;
         }
 
-        setLoadError(message);
+        setLoadError(
+          getUserFacingSupabaseMessage(error, "대시보드 데이터를 불러오지 못했습니다."),
+        );
         setExpenseRequests([]);
       } finally {
         if (isMounted) {
@@ -223,38 +217,38 @@ export default function Home() {
 
   const dashboardData = useMemo(() => {
     const currentMonthKey = getCurrentMonthKey();
-    const currentMonthApprovedRequests = expenseRequests.filter(
-      (row) => row.status === "approved" && getExpenseMonthKey(row.expense_date) === currentMonthKey,
+    const approvedRequests = expenseRequests.filter((row) => row.status === "approved");
+    const currentMonthApprovedRequests = approvedRequests.filter(
+      (row) => getExpenseMonthKey(row.expense_date) === currentMonthKey,
     );
-    const settlementTargetRequests = currentMonthApprovedRequests.filter(
+    const settlementTargetRequests = approvedRequests.filter(
       (row) => row.settlement_requested && isSettlementTargetPaymentMethodValue(row.payment_method),
     );
-    const settlementReadyAmount = settlementTargetRequests
-      .filter((row) => row.evidence_status === "attached")
-      .reduce((sum, row) => sum + row.amount, 0);
-    const settlementHoldRequests = settlementTargetRequests.filter(
-      (row) => row.evidence_status === "none",
-    );
-    const settlementHoldAmount = settlementHoldRequests.reduce(
+    const settlementPlannedAmount = settlementTargetRequests.reduce(
       (sum, row) => sum + row.amount,
       0,
     );
+    const settlementHoldCount = settlementTargetRequests.filter(
+      (row) => row.evidence_status === "none",
+    ).length;
 
-    const categoryAmountMap = new Map<string, number>();
     const projectAmountMap = new Map<string, number>();
+    const categoryAmountMap = new Map<string, number>();
 
-    currentMonthApprovedRequests.forEach((row) => {
-      const categoryName = getSingleRelation(row.category)?.name ?? "기타";
+    approvedRequests.forEach((row) => {
       const projectName = getSingleRelation(row.project)?.name ?? "미지정 프로젝트";
+      const categoryName = getSingleRelation(row.category)?.name ?? "기타";
 
-      categoryAmountMap.set(categoryName, (categoryAmountMap.get(categoryName) ?? 0) + row.amount);
       projectAmountMap.set(projectName, (projectAmountMap.get(projectName) ?? 0) + row.amount);
+      categoryAmountMap.set(categoryName, (categoryAmountMap.get(categoryName) ?? 0) + row.amount);
     });
 
     const approvedCurrentMonthAmount = currentMonthApprovedRequests.reduce(
       (sum, row) => sum + row.amount,
       0,
     );
+    const paidCurrentMonthAmount = approvedCurrentMonthAmount;
+    const approvedTotalAmount = approvedRequests.reduce((sum, row) => sum + row.amount, 0);
 
     const recentExpenseItems = [...expenseRequests]
       .sort(sortByRequestDateDesc)
@@ -267,6 +261,18 @@ export default function Home() {
       .slice(0, 5)
       .map(mapPendingApproval);
 
+    const projectBudgetItems: ProjectBudget[] = [...projectAmountMap.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .map(([name, spentAmount]) => ({
+        name,
+        totalBudget: approvedTotalAmount,
+        spentBudget: spentAmount,
+        usageRate:
+          approvedTotalAmount > 0
+            ? Math.round((spentAmount / approvedTotalAmount) * 100)
+            : 0,
+      }));
+
     const expenseCategoryItems: ExpenseCategory[] = [...categoryAmountMap.entries()]
       .sort((left, right) => right[1] - left[1])
       .map(([category, amount]) => ({
@@ -274,29 +280,17 @@ export default function Home() {
         amount,
       }));
 
-    const projectBudgetItems: ProjectBudget[] = [...projectAmountMap.entries()]
-      .sort((left, right) => right[1] - left[1])
-      .map(([name, spentAmount]) => ({
-        name,
-        totalBudget: approvedCurrentMonthAmount,
-        spentBudget: spentAmount,
-        usageRate:
-          approvedCurrentMonthAmount > 0
-            ? Math.round((spentAmount / approvedCurrentMonthAmount) * 100)
-            : 0,
-      }));
-
     return {
       approvedCurrentMonthAmount,
-      settlementReadyAmount,
-      settlementHoldAmount,
-      settlementHoldCount: settlementHoldRequests.length,
+      paidCurrentMonthAmount,
+      settlementPlannedAmount,
+      settlementHoldCount,
       pendingApprovalCount: expenseRequests.filter((row) => row.status === "submitted").length,
       missingProofCount: expenseRequests.filter((row) => row.evidence_status === "none").length,
       recentExpenseItems,
       pendingApprovalItems,
-      expenseCategoryItems,
       projectBudgetItems,
+      expenseCategoryItems,
     };
   }, [expenseRequests]);
 
@@ -318,34 +312,38 @@ export default function Home() {
     {
       id: "approved-current-month",
       title: "이번 달 승인 지출",
-      description: "이번 달 승인 완료된 경비 합계",
+      description: "이번 달 expense_date 기준 approved 금액 합계",
       value: isLoading ? null : <AmountText value={dashboardData.approvedCurrentMonthAmount} />,
       icon: <CircleDollarSign className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
-      id: "settlement-ready",
+      id: "paid-current-month",
+      title: "이번 달 실제 지급액",
+      description: "임시 기준으로 approved 금액 합계를 표시합니다.",
+      value: isLoading ? null : <AmountText value={dashboardData.paidCurrentMonthAmount} />,
+      icon: <BanknoteArrowDown className="h-5 w-5" strokeWidth={1.8} />,
+    },
+    {
+      id: "settlement-planned",
       title: "직원 정산 예정액",
       description:
         dashboardData.settlementHoldCount > 0
-          ? `증빙 미첨부 ${dashboardData.settlementHoldCount}건은 보류 가능`
-          : "개인카드/현금 승인 건 기준 예정 금액",
-      value: isLoading ? null : <AmountText value={dashboardData.settlementReadyAmount} />,
+          ? `증빙 미첨부 ${dashboardData.settlementHoldCount}건 포함`
+          : "approved + 정산 요청 + 개인카드/현금 기준 금액",
+      value: isLoading ? null : <AmountText value={dashboardData.settlementPlannedAmount} />,
       icon: <BanknoteArrowDown className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "pending-approvals",
       title: "승인 대기 건수",
-      description: "관리자 검토가 필요한 submitted 요청 수",
+      description: "status = submitted 기준 건수",
       value: isLoading ? null : <span>{dashboardData.pendingApprovalCount}건</span>,
       icon: <ClipboardList className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "missing-proof",
       title: "증빙 미첨부 건수",
-      description:
-        dashboardData.settlementHoldAmount > 0
-          ? `정산 보류 가능 금액 ${dashboardData.settlementHoldAmount.toLocaleString("ko-KR")}원`
-          : "전체 요청 중 증빙 미첨부 건수",
+      description: "evidence_status = none 기준 건수",
       value: isLoading ? null : <span>{dashboardData.missingProofCount}건</span>,
       icon: <FileWarning className="h-5 w-5" strokeWidth={1.8} />,
     },
@@ -369,14 +367,16 @@ export default function Home() {
         </section>
       ) : null}
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
         {summaryCards.map((stat) => (
           <StatCard
             key={stat.id}
             title={stat.title}
             description={stat.description}
             value={
-              stat.value ?? <span className="text-base font-medium text-slate-400">불러오는 중...</span>
+              stat.value ?? (
+                <span className="text-base font-medium text-slate-400">불러오는 중...</span>
+              )
             }
             icon={stat.icon}
           />

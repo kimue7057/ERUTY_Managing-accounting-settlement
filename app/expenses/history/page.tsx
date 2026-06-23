@@ -19,7 +19,7 @@ import {
   expenseHistoryStatusOptions,
   expenseHistoryTypeOptions,
   roleViews,
-} from "@/data/mockData";
+} from "@/data/uiOptions";
 import {
   getSupabaseBrowserClient,
   isSupabaseConfigured,
@@ -31,6 +31,7 @@ import type {
   PaymentMethod,
   SettlementRequestOption,
 } from "@/types";
+import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 const tableColumns = [
   { key: "requestNumber", label: "요청번호" },
@@ -349,8 +350,10 @@ export default function ExpenseHistoryPage() {
 
         setHistoryItems(mappedItems);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "내 지출 내역 조회 중 알 수 없는 오류가 발생했습니다.";
+        const message = getUserFacingSupabaseMessage(
+          error,
+          "내 지출 내역 조회 중 알 수 없는 오류가 발생했습니다.",
+        );
 
         if (!isMounted) {
           return;

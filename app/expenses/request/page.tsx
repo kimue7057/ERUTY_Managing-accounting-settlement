@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ExpenseGuidePanel } from "@/components/expenses/ExpenseGuidePanel";
 import { ExpenseRequestForm } from "@/components/expenses/ExpenseRequestForm";
-import { attachmentCategories, roleViews } from "@/data/mockData";
+import { attachmentCategories, roleViews } from "@/data/uiOptions";
 import {
   getSupabaseBrowserClient,
   isSupabaseConfigured,
@@ -21,6 +21,7 @@ import type {
   SettlementRequestOption,
 } from "@/types";
 import type { DbAttachmentFileType } from "@/utils/expenseRequests";
+import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 type ProjectOptionRow = {
   id: string;
@@ -225,18 +226,6 @@ function createRequestNumber() {
 function normalizeOptionalText(value: string) {
   const trimmedValue = value.trim();
   return trimmedValue.length > 0 ? trimmedValue : undefined;
-}
-
-function getUserFacingErrorMessage(error: unknown, fallbackMessage: string) {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = error.message;
-
-    if (typeof message === "string" && message.trim().length > 0) {
-      return message;
-    }
-  }
-
-  return fallbackMessage;
 }
 
 function getAttachmentFileExtension(fileName: string) {
@@ -801,7 +790,7 @@ export default function ExpenseRequestPage() {
     } catch (error) {
       setSubmitResult({
         status: "error",
-        message: getUserFacingErrorMessage(
+        message: getUserFacingSupabaseMessage(
           error,
           "경비 요청을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
         ),

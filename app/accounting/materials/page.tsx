@@ -44,6 +44,7 @@ import {
   type DbPaymentMethod,
 } from "@/utils/expenseRequests";
 import { formatNumber } from "@/utils/format";
+import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 type AccountingTabKey =
   | "monthly-summary"
@@ -295,7 +296,11 @@ function buildMonthlySettlementEmployees(
   const grouped = new Map<string, MonthlySettlementEmployee>();
 
   expenses
-    .filter((expense) => expense.settlementEligibility === "정산 대상")
+    .filter(
+      (expense) =>
+        expense.settlementEligibility === "정산 대상" &&
+        expense.approvalStatus === "승인완료",
+    )
     .forEach((expense) => {
       const current = grouped.get(expense.employeeName) ?? {
         id: expense.employeeName,
@@ -311,16 +316,12 @@ function buildMonthlySettlementEmployees(
 
       current.personalExpenseTotal += expense.amount;
 
-      if (expense.approvalStatus === "승인완료") {
-        current.approvedAmount += expense.amount;
+      current.approvedAmount += expense.amount;
 
-        if (expense.attachmentStatus === "첨부완료") {
-          current.finalPayoutAmount += expense.amount;
-        } else {
-          current.missingProofAmount += expense.amount;
-        }
-      } else if (expense.approvalStatus === "반려") {
-        current.rejectedAmount += expense.amount;
+      if (expense.attachmentStatus === "첨부완료") {
+        current.finalPayoutAmount += expense.amount;
+      } else {
+        current.missingProofAmount += expense.amount;
       }
 
       current.expenses.push({
@@ -329,7 +330,7 @@ function buildMonthlySettlementEmployees(
         expenseType: expense.expenseType,
         merchantName: expense.merchantName,
         amount: expense.amount,
-        approvedAmount: expense.approvalStatus === "승인완료" ? expense.amount : 0,
+        approvedAmount: expense.amount,
         attachmentStatus: expense.attachmentStatus,
         settlementStatus:
           expense.attachmentStatus === "미첨부" ? "보류" : "지급대기",
@@ -487,10 +488,10 @@ export default function AccountingMaterialsPage() {
 
         setRawExpenseRows((data ?? []) as ExpenseRequestRow[]);
       } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "회계 자료를 불러오는 중 알 수 없는 오류가 발생했습니다.";
+        const message = getUserFacingSupabaseMessage(
+          error,
+          "회계 자료를 불러오는 중 알 수 없는 오류가 발생했습니다.",
+        );
 
         if (!isMounted) {
           return;
@@ -756,7 +757,7 @@ export default function AccountingMaterialsPage() {
       return (
         <TabSection
           title="직원별 정산 내역"
-          description="월말 정산 집계 기준으로 직원별 승인 금액과 정산 예정액을 표시합니다."
+          description="승인완료된 개인카드/현금 사용 건만 기준으로 직원별 승인 금액과 정산 예정액을 표시합니다."
           columns={employeeSettlementColumns}
           hasRows={employeeSettlementRows.length > 0}
           emptyMessage="조건에 맞는 직원별 정산 내역이 없습니다."

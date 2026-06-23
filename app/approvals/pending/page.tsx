@@ -41,6 +41,7 @@ import {
   type DbExpenseStatus,
   type DbPaymentMethod,
 } from "@/utils/expenseRequests";
+import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 const roleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
 
@@ -247,10 +248,10 @@ export default function ApprovalPendingPage() {
 
         setItems(mappedItems);
       } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "승인 대기함 데이터를 불러오는 중 알 수 없는 오류가 발생했습니다.";
+        const message = getUserFacingSupabaseMessage(
+          error,
+          "승인 대기함 데이터를 불러오는 중 알 수 없는 오류가 발생했습니다.",
+        );
 
         if (!isMounted) {
           return;
