@@ -17,17 +17,12 @@ import { ExpenseCategorySummary } from "@/components/dashboard/ExpenseCategorySu
 import { PendingApprovals } from "@/components/dashboard/PendingApprovals";
 import { ProjectBudgetSummary } from "@/components/dashboard/ProjectBudgetSummary";
 import { RecentExpenses } from "@/components/dashboard/RecentExpenses";
+import { roleViews } from "@/data/uiOptions";
 import {
   getSupabaseBrowserClient,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
-import type {
-  ExpenseCategory,
-  PendingApproval,
-  ProjectBudget,
-  RecentExpense,
-  RoleView,
-} from "@/types";
+import type { ExpenseCategory, PendingApproval, ProjectBudget } from "@/types";
 import {
   formatSupabaseDate,
   getRequestSortValue,
@@ -39,11 +34,6 @@ import {
   type DbPaymentMethod,
 } from "@/utils/expenseRequests";
 import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
-
-const roleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
-
-const mockHoldingAmount = 52_400_000;
-const mockAvailableAmount = 41_800_000;
 
 type RelationValue<T> = T | T[] | null;
 
@@ -102,13 +92,17 @@ function isSettlementTargetPaymentMethodValue(paymentMethod: DbPaymentMethod) {
   return paymentMethod === "personal_card" || paymentMethod === "cash";
 }
 
-function mapRecentExpense(row: DashboardExpenseRequestRow): RecentExpense {
+function PlaceholderValue({ text = "연결 전" }: { text?: string }) {
+  return <span className="text-xl font-semibold text-slate-400">{text}</span>;
+}
+
+function mapRecentExpense(row: DashboardExpenseRequestRow) {
   const requester = getSingleRelation(row.requester);
 
   return {
     draftNumber: row.request_no,
     title: row.title,
-    requester: requester?.name ?? "미확인 직원",
+    requester: requester?.name ?? "미지정 직원",
     amount: row.amount,
     status: mapDbExpenseStatus(row.status),
     requestedAt: formatSupabaseDate(getRequestSortValue(row)),
@@ -120,7 +114,7 @@ function mapPendingApproval(row: DashboardExpenseRequestRow): PendingApproval {
   const project = getSingleRelation(row.project);
 
   return {
-    requester: requester?.name ?? "미확인 직원",
+    requester: requester?.name ?? "미지정 직원",
     title: row.title,
     project: project?.name ?? "미지정 프로젝트",
     requestedAmount: row.amount,
@@ -198,7 +192,10 @@ export default function Home() {
         }
 
         setLoadError(
-          getUserFacingSupabaseMessage(error, "대시보드 데이터를 불러오지 못했습니다."),
+          getUserFacingSupabaseMessage(
+            error,
+            "대시보드 데이터를 불러오지 못했습니다.",
+          ),
         );
         setExpenseRequests([]);
       } finally {
@@ -298,28 +295,28 @@ export default function Home() {
     {
       id: "total-funds",
       title: "현재 총 보유자금",
-      description: "전체 계좌 기준 잔액",
-      value: isLoading ? null : <AmountText value={mockHoldingAmount} />,
+      description: "계좌 잔액 테이블이 아직 연결되지 않았습니다.",
+      value: isLoading ? null : <PlaceholderValue />,
       icon: <Wallet className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "available-funds",
       title: "실질 가용 자금",
-      description: "예정 지출 차감 후 가용 금액",
-      value: isLoading ? null : <AmountText value={mockAvailableAmount} />,
+      description: "자금 계좌 및 예정 출금 테이블 연결 후 계산됩니다.",
+      value: isLoading ? null : <PlaceholderValue />,
       icon: <Landmark className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "approved-current-month",
       title: "이번 달 승인 지출",
-      description: "이번 달 expense_date 기준 approved 금액 합계",
+      description: "이번 달 expense_date 기준 승인 완료 금액 합계",
       value: isLoading ? null : <AmountText value={dashboardData.approvedCurrentMonthAmount} />,
       icon: <CircleDollarSign className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "paid-current-month",
       title: "이번 달 실제 지급액",
-      description: "임시 기준으로 approved 금액 합계를 표시합니다.",
+      description: "지급 테이블 연결 전까지 승인 완료 금액 합계로 표시합니다.",
       value: isLoading ? null : <AmountText value={dashboardData.paidCurrentMonthAmount} />,
       icon: <BanknoteArrowDown className="h-5 w-5" strokeWidth={1.8} />,
     },
@@ -329,7 +326,7 @@ export default function Home() {
       description:
         dashboardData.settlementHoldCount > 0
           ? `증빙 미첨부 ${dashboardData.settlementHoldCount}건 포함`
-          : "approved + 정산 요청 + 개인카드/현금 기준 금액",
+          : "승인 완료 + 정산 요청 + 개인카드/현금 기준 금액",
       value: isLoading ? null : <AmountText value={dashboardData.settlementPlannedAmount} />,
       icon: <BanknoteArrowDown className="h-5 w-5" strokeWidth={1.8} />,
     },
