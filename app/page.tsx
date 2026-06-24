@@ -490,6 +490,7 @@ export default function Home() {
         payment_method: row.payment_method,
       })),
       handledExpenseRequestIds,
+      confirmedSettlementAmount: settlementPlannedAmount,
     });
 
     const recentExpenseItems = [...expenseRequests]

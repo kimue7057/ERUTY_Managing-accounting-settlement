@@ -138,10 +138,12 @@ export function calculateFundOverview({
   funds,
   approvedExpenses,
   handledExpenseRequestIds,
+  confirmedSettlementAmount = 0,
 }: {
   funds: FundBalanceSource[];
   approvedExpenses: ApprovedExpenseSource[];
   handledExpenseRequestIds: Set<string>;
+  confirmedSettlementAmount?: number;
 }) {
   const totalFunds = funds
     .filter((fund) => fund.status === "active")
@@ -151,13 +153,7 @@ export function calculateFundOverview({
     (expense) => expense.status === "approved" && !handledExpenseRequestIds.has(expense.id),
   );
 
-  const settlementPendingAmount = pendingApprovedExpenses
-    .filter(
-      (expense) =>
-        expense.settlement_requested &&
-        (expense.payment_method === "personal_card" || expense.payment_method === "cash"),
-    )
-    .reduce((sum, expense) => sum + expense.amount, 0);
+  const settlementPendingAmount = Math.max(confirmedSettlementAmount, 0);
 
   const approvedExpensePendingAmount = pendingApprovedExpenses
     .filter(

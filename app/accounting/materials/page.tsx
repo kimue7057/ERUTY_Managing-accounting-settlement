@@ -21,7 +21,6 @@ import {
   getSupabaseBrowserClient,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
-import { createCsvContent, downloadCsvFile, type CsvColumn } from "@/utils/csv";
 import type { AttachmentStatus, ExpenseStatus, RoleView } from "@/types";
 import {
   formatSupabaseDate,
@@ -34,10 +33,7 @@ import {
   type DbExpenseStatus,
   type DbPaymentMethod,
 } from "@/utils/expenseRequests";
-import {
-  calculateProjectBudgetMetrics,
-  type DbProjectBudgetStatus,
-} from "@/utils/projectBudget";
+import { createCsvContent, downloadCsvFile, type CsvColumn } from "@/utils/csv";
 import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 type AccountingTabKey =
@@ -59,10 +55,6 @@ type RequesterRelation = {
 type ProjectRelation = {
   id: string;
   name: string;
-  budget_amount: number | string | null;
-  used_amount: number | string | null;
-  remaining_amount: number | string | null;
-  budget_status: DbProjectBudgetStatus | null;
 };
 
 type CategoryRelation = {
@@ -97,7 +89,7 @@ type ExpenseAttachmentRequestRow = {
 
 type SettlementRecordStatus = "confirmed" | "paid" | "on_hold";
 type SettlementItemStatus = "confirmed" | "pending_evidence" | "rejected";
-type SettlementStatusBadgeValue = "정산대기" | "정산완료" | "지급완료" | "보류";
+type SettlementStatusBadgeValue = "정산대기" | "정산확정" | "지급완료" | "보류";
 
 type SettlementRecordEmployeeRelation = {
   id: string;
@@ -187,6 +179,7 @@ type EmployeeSettlementRow = {
   employeeName: string;
   department: string;
   approvedAmount: number;
+  pendingEvidenceAmount: number;
   confirmedAmount: number;
   paidAmount: number;
   payoutStatus: SettlementStatusBadgeValue;
@@ -212,6 +205,11 @@ type CategorySummaryRow = {
   confirmedAmount: number;
   paidAmount: number;
   missingProofCount: number;
+};
+
+type ExportFeedbackState = {
+  type: "success" | "error" | "info";
+  message: string;
 };
 
 const roleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
@@ -243,6 +241,7 @@ const employeeSettlementColumns = [
   { key: "employeeName", label: "직원명" },
   { key: "department", label: "부서" },
   { key: "approvedAmount", label: "승인 금액", align: "right" as const },
+  { key: "pendingEvidenceAmount", label: "증빙 보류 금액", align: "right" as const },
   { key: "confirmedAmount", label: "정산 확정 금액", align: "right" as const },
   { key: "paidAmount", label: "지급 완료 금액", align: "right" as const },
   { key: "payoutStatus", label: "지급 상태", align: "center" as const },
@@ -268,6 +267,75 @@ const categoryColumns = [
   { key: "missingProofCount", label: "증빙 누락 건수", align: "right" as const },
 ];
 
+const allExpenseCsvColumns: CsvColumn<AccountingExpenseRow>[] = [
+  { key: "requestNumber", header: "요청번호" },
+  { key: "usedDate", header: "사용일" },
+  { key: "requestedDate", header: "요청일" },
+  { key: "approvedDate", header: "승인일" },
+  { key: "employeeName", header: "직원명" },
+  { key: "department", header: "부서" },
+  { key: "projectName", header: "프로젝트명" },
+  { key: "categoryName", header: "경비유형" },
+  { key: "vendor", header: "사용처" },
+  { key: "purpose", header: "사용목적" },
+  { key: "paymentMethod", header: "결제수단" },
+  { key: "settlementRequestedLabel", header: "정산요청여부" },
+  { key: "amount", header: "금액" },
+  { key: "approvalStatus", header: "상태" },
+  { key: "attachmentStatus", header: "증빙상태" },
+  { key: "settlementStatusLabel", header: "정산상태" },
+  { key: "memo", header: "메모" },
+];
+
+const employeeSettlementCsvColumns: CsvColumn<EmployeeSettlementRow>[] = [
+  { key: "employeeName", header: "직원명" },
+  { key: "department", header: "부서" },
+  { key: "approvedAmount", header: "승인금액" },
+  { key: "pendingEvidenceAmount", header: "증빙보류금액" },
+  { key: "confirmedAmount", header: "정산확정금액" },
+  { key: "paidAmount", header: "지급완료금액" },
+  { key: "payoutStatus", header: "지급상태" },
+];
+
+const projectCsvColumns: CsvColumn<ProjectSummaryRow>[] = [
+  { key: "name", header: "프로젝트명" },
+  { key: "count", header: "지출건수" },
+  { key: "amount", header: "총지출금액" },
+  { key: "approvedAmount", header: "승인완료금액" },
+  { key: "confirmedAmount", header: "정산확정금액" },
+  { key: "paidAmount", header: "지급완료금액" },
+  { key: "missingProofCount", header: "증빙누락건수" },
+];
+
+const categoryCsvColumns: CsvColumn<CategorySummaryRow>[] = [
+  { key: "name", header: "경비유형" },
+  { key: "count", header: "지출건수" },
+  { key: "amount", header: "총지출금액" },
+  { key: "approvedAmount", header: "승인완료금액" },
+  { key: "confirmedAmount", header: "정산확정금액" },
+  { key: "paidAmount", header: "지급완료금액" },
+  { key: "missingProofCount", header: "증빙누락건수" },
+];
+
+const issueCsvColumns: CsvColumn<AccountingExpenseRow>[] = [
+  { key: "requestNumber", header: "요청번호" },
+  { key: "usedDate", header: "사용일" },
+  { key: "requestedDate", header: "요청일" },
+  { key: "employeeName", header: "직원명" },
+  { key: "projectName", header: "프로젝트명" },
+  { key: "categoryName", header: "경비유형" },
+  { key: "vendor", header: "사용처" },
+  { key: "amount", header: "금액" },
+  { key: "approvalStatus", header: "승인상태" },
+  { key: "attachmentStatus", header: "증빙상태" },
+  { key: "settlementStatusLabel", header: "정산상태" },
+  { key: "memo", header: "메모" },
+];
+
+function getAccountingCsvFileName(month: string, suffix: string) {
+  return `eruty-accounting-${month}-${suffix}.csv`;
+}
+
 const issueColumns = [
   { key: "requestNumber", label: "요청번호" },
   { key: "usedDate", label: "사용일" },
@@ -276,35 +344,10 @@ const issueColumns = [
   { key: "categoryName", label: "경비 유형" },
   { key: "vendor", label: "사용처" },
   { key: "amount", label: "금액", align: "right" as const },
+  { key: "attachmentStatus", label: "증빙 상태", align: "center" as const },
   { key: "approvalStatus", label: "승인 상태", align: "center" as const },
   { key: "settlementStatus", label: "정산 상태", align: "center" as const },
 ];
-
-type EmployeeSettlementExportRow = {
-  settlementMonth: string;
-  employeeName: string;
-  department: string;
-  approvedAmount: number;
-  pendingEvidenceAmount: number;
-  rejectedAmount: number;
-  finalPaymentAmount: number;
-  settlementStatus: string;
-  paidDate: string;
-};
-
-type ProjectExportRow = {
-  projectName: string;
-  totalBudget: number;
-  usedAmount: number;
-  remainingAmount: number;
-  usageRate: number;
-  status: string;
-};
-
-type ExportFeedback = {
-  tone: "success" | "info" | "error";
-  message: string;
-};
 
 type MonthOption = {
   value: string;
@@ -337,52 +380,6 @@ function getMonthRange(monthValue: string) {
     start: monthStart.toISOString().slice(0, 10),
     end: monthEnd.toISOString().slice(0, 10),
   };
-}
-
-function formatCsvDateValue(value: string | null | undefined) {
-  if (!value) {
-    return "";
-  }
-
-  return formatSupabaseDate(value);
-}
-
-function getAccountingCsvFileName(month: string, suffix?: string) {
-  return suffix ? `eruty-accounting-${month}-${suffix}.csv` : `eruty-accounting-${month}.csv`;
-}
-
-function stripCsvBom(value: string) {
-  return value.startsWith("\uFEFF") ? value.slice(1) : value;
-}
-
-function getProjectExportStatusLabel(
-  budgetStatus: ReturnType<typeof calculateProjectBudgetMetrics>["status"],
-  budgetConfigured: boolean,
-) {
-  if (!budgetConfigured) {
-    return "예산 미설정";
-  }
-
-  return budgetStatus;
-}
-
-function getSettlementExportStatusLabel(
-  status: SettlementRecordStatus | null | undefined,
-  fallbackStatus: SettlementStatusBadgeValue,
-) {
-  if (status === "paid") {
-    return "지급완료";
-  }
-
-  if (status === "confirmed") {
-    return "정산확정";
-  }
-
-  if (status === "on_hold") {
-    return "보류";
-  }
-
-  return fallbackStatus;
 }
 
 function isSettlementSchemaMissing(error: unknown) {
@@ -475,8 +472,8 @@ function resolveSettlementStatus(
       settlementLookup.settlementStatus === "confirmed"
     ) {
       return {
-        badgeStatus: "정산완료",
-        label: "정산완료",
+        badgeStatus: "정산확정",
+        label: "정산확정",
         confirmedAmount: settlementLookup.amount,
         paidAmount: 0,
       };
@@ -575,7 +572,11 @@ function getPayoutStatus(row: EmployeeSettlementRow): SettlementStatusBadgeValue
   }
 
   if (row.confirmedAmount > 0) {
-    return "정산완료";
+    return "정산확정";
+  }
+
+  if (row.pendingEvidenceAmount > 0) {
+    return "보류";
   }
 
   if (row.approvedAmount > 0) {
@@ -657,7 +658,7 @@ export default function AccountingMaterialsPage() {
   const [schemaNotice, setSchemaNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [exportFeedback, setExportFeedback] = useState<ExportFeedback | null>(null);
+  const [exportFeedback, setExportFeedback] = useState<ExportFeedbackState | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -714,11 +715,7 @@ export default function AccountingMaterialsPage() {
               ),
               project:projects!expense_requests_project_id_fkey (
                 id,
-                name,
-                budget_amount,
-                used_amount,
-                remaining_amount,
-                budget_status
+                name
               ),
               category:expense_categories!expense_requests_category_id_fkey (
                 id,
@@ -728,6 +725,7 @@ export default function AccountingMaterialsPage() {
           )
           .gte("expense_date", monthRange.start)
           .lte("expense_date", monthRange.end)
+          .neq("status", "draft")
           .order("expense_date", { ascending: false })
           .order("requested_at", { ascending: false });
 
@@ -913,25 +911,57 @@ export default function AccountingMaterialsPage() {
           employeeName: row.employeeName,
           department: row.department,
           approvedAmount: 0,
+          pendingEvidenceAmount: 0,
           confirmedAmount: 0,
           paidAmount: 0,
           payoutStatus: "보류" as SettlementStatusBadgeValue,
         };
 
         current.approvedAmount += row.approvedAmount;
+        if (row.attachmentStatus === "미첨부") {
+          current.pendingEvidenceAmount += row.approvedAmount;
+        }
         current.confirmedAmount += row.settlementConfirmedAmount;
         current.paidAmount += row.settlementPaidAmount;
 
         grouped.set(row.employeeId, current);
       });
 
+    settlementRecords.forEach((record) => {
+      const employee = getSingleRelation(record.employee);
+      const current = grouped.get(record.employee_id) ?? {
+        employeeId: record.employee_id,
+        employeeName: employee?.name ?? `직원 ${record.employee_id.slice(0, 8)}`,
+        department: employee?.department ?? "-",
+        approvedAmount: 0,
+        pendingEvidenceAmount: 0,
+        confirmedAmount: 0,
+        paidAmount: 0,
+        payoutStatus: "보류" as SettlementStatusBadgeValue,
+      };
+
+      current.approvedAmount = record.approved_amount;
+      current.pendingEvidenceAmount = record.pending_evidence_amount;
+      current.confirmedAmount = record.status === "confirmed" ? record.final_payment_amount : 0;
+      current.paidAmount = record.status === "paid" ? record.final_payment_amount : 0;
+
+      grouped.set(record.employee_id, current);
+    });
+
     return Array.from(grouped.values())
       .map((row) => ({
         ...row,
         payoutStatus: getPayoutStatus(row),
       }))
+      .filter(
+        (row) =>
+          row.approvedAmount > 0 ||
+          row.pendingEvidenceAmount > 0 ||
+          row.confirmedAmount > 0 ||
+          row.paidAmount > 0,
+      )
       .sort((left, right) => right.approvedAmount - left.approvedAmount);
-  }, [accountingRows]);
+  }, [accountingRows, settlementRecords]);
 
   const projectExpenseRows = useMemo<ProjectSummaryRow[]>(() => {
     const grouped = new Map<string, ProjectSummaryRow>();
@@ -1001,308 +1031,6 @@ export default function AccountingMaterialsPage() {
       ),
     [accountingRows],
   );
-
-  const employeeSettlementExportRows = useMemo<EmployeeSettlementExportRow[]>(() => {
-    const grouped = new Map<
-      string,
-      EmployeeSettlementExportRow & {
-        fallbackStatus: SettlementStatusBadgeValue;
-      }
-    >();
-
-    const ensureRow = (employeeId: string, employeeName: string, department: string) => {
-      const existing = grouped.get(employeeId);
-
-      if (existing) {
-        return existing;
-      }
-
-      const nextRow: EmployeeSettlementExportRow & {
-        fallbackStatus: SettlementStatusBadgeValue;
-      } = {
-        settlementMonth: selectedMonth,
-        employeeName,
-        department,
-        approvedAmount: 0,
-        pendingEvidenceAmount: 0,
-        rejectedAmount: 0,
-        finalPaymentAmount: 0,
-        settlementStatus: "",
-        paidDate: "",
-        fallbackStatus: "보류",
-      };
-
-      grouped.set(employeeId, nextRow);
-      return nextRow;
-    };
-
-    accountingRows.forEach((row) => {
-      if (!row.settlementEligible && row.rawStatus !== "rejected") {
-        return;
-      }
-
-      const current = ensureRow(row.employeeId, row.employeeName, row.department);
-
-      if (row.settlementEligible && row.rawStatus === "approved") {
-        current.approvedAmount += row.approvedAmount;
-
-        if (row.attachmentStatus === "미첨부") {
-          current.pendingEvidenceAmount += row.approvedAmount;
-        } else {
-          current.finalPaymentAmount += row.approvedAmount;
-        }
-      }
-
-      if (row.settlementEligible && row.rawStatus === "rejected") {
-        current.rejectedAmount += row.amount;
-      }
-    });
-
-    settlementRecords.forEach((record) => {
-      const employee = getSingleRelation(record.employee);
-      const current = ensureRow(
-        record.employee_id,
-        employee?.name ?? `직원 ${record.employee_id.slice(0, 8)}`,
-        employee?.department ?? "-",
-      );
-
-      current.approvedAmount = record.approved_amount;
-      current.pendingEvidenceAmount = record.pending_evidence_amount;
-      current.rejectedAmount = record.rejected_amount;
-      current.finalPaymentAmount = record.final_payment_amount;
-      current.settlementStatus = getSettlementExportStatusLabel(
-        record.status,
-        current.fallbackStatus,
-      );
-      current.paidDate = formatCsvDateValue(record.paid_at);
-    });
-
-    return Array.from(grouped.values())
-      .map((row) => {
-        const fallbackStatus: SettlementStatusBadgeValue =
-          row.pendingEvidenceAmount > 0 || row.rejectedAmount > 0
-            ? "보류"
-            : row.finalPaymentAmount > 0
-              ? "정산대기"
-              : "보류";
-
-        return {
-          settlementMonth: row.settlementMonth,
-          employeeName: row.employeeName,
-          department: row.department,
-          approvedAmount: row.approvedAmount,
-          pendingEvidenceAmount: row.pendingEvidenceAmount,
-          rejectedAmount: row.rejectedAmount,
-          finalPaymentAmount: row.finalPaymentAmount,
-          settlementStatus:
-            row.settlementStatus || getSettlementExportStatusLabel(null, fallbackStatus),
-          paidDate: row.paidDate,
-        };
-      })
-      .filter(
-        (row) =>
-          row.approvedAmount > 0 ||
-          row.pendingEvidenceAmount > 0 ||
-          row.rejectedAmount > 0 ||
-          row.finalPaymentAmount > 0,
-      )
-      .sort(
-        (left, right) =>
-          right.finalPaymentAmount - left.finalPaymentAmount ||
-          right.approvedAmount - left.approvedAmount,
-      );
-  }, [accountingRows, selectedMonth, settlementRecords]);
-
-  const projectExportRows = useMemo<ProjectExportRow[]>(() => {
-    const grouped = new Map<string, ProjectExportRow>();
-
-    rawExpenseRows.forEach((row) => {
-      const project = getSingleRelation(row.project);
-
-      if (!project?.id || grouped.has(project.id)) {
-        return;
-      }
-
-      const budgetMetrics = calculateProjectBudgetMetrics(
-        project.budget_amount,
-        project.used_amount,
-        project.budget_status,
-      );
-
-      grouped.set(project.id, {
-        projectName: project.name,
-        totalBudget: budgetMetrics.budgetAmount,
-        usedAmount: budgetMetrics.usedAmount,
-        remainingAmount: budgetMetrics.remainingAmount,
-        usageRate: budgetMetrics.usageRate,
-        status: getProjectExportStatusLabel(
-          budgetMetrics.status,
-          budgetMetrics.budgetConfigured,
-        ),
-      });
-    });
-
-    return Array.from(grouped.values()).sort(
-      (left, right) =>
-        right.usedAmount - left.usedAmount ||
-        left.projectName.localeCompare(right.projectName, "ko-KR"),
-    );
-  }, [rawExpenseRows]);
-
-  const allExpenseCsvColumns: CsvColumn<AccountingExpenseRow>[] = [
-    { key: "requestNumber", header: "요청번호" },
-    { key: "usedDate", header: "사용일" },
-    { key: "requestedDate", header: "요청일" },
-    { key: "approvedDate", header: "승인일" },
-    { key: "employeeName", header: "직원명" },
-    { key: "department", header: "부서" },
-    { key: "projectName", header: "프로젝트명" },
-    { key: "categoryName", header: "경비유형" },
-    { key: "vendor", header: "사용처" },
-    { key: "purpose", header: "사용목적" },
-    { key: "paymentMethod", header: "결제수단" },
-    { key: "settlementRequestedLabel", header: "정산요청여부" },
-    { key: "amount", header: "금액" },
-    { key: "approvalStatus", header: "상태" },
-    { key: "attachmentStatus", header: "증빙상태" },
-    { key: "memo", header: "메모" },
-  ];
-
-  const employeeSettlementCsvColumns: CsvColumn<EmployeeSettlementExportRow>[] = [
-    { key: "settlementMonth", header: "정산월" },
-    { key: "employeeName", header: "직원명" },
-    { key: "department", header: "부서" },
-    { key: "approvedAmount", header: "승인금액" },
-    { key: "pendingEvidenceAmount", header: "증빙보류금액" },
-    { key: "rejectedAmount", header: "반려금액" },
-    { key: "finalPaymentAmount", header: "최종지급예정액" },
-    { key: "settlementStatus", header: "정산상태" },
-    { key: "paidDate", header: "지급일" },
-  ];
-
-  const projectCsvColumns: CsvColumn<ProjectExportRow>[] = [
-    { key: "projectName", header: "프로젝트명" },
-    { key: "totalBudget", header: "총예산" },
-    { key: "usedAmount", header: "사용금액" },
-    { key: "remainingAmount", header: "잔여예산" },
-    { key: "usageRate", header: "사용률" },
-    { key: "status", header: "상태" },
-  ];
-
-  const categoryCsvColumns: CsvColumn<CategorySummaryRow>[] = [
-    { key: "name", header: "경비유형" },
-    { key: "count", header: "지출건수" },
-    { key: "amount", header: "총금액" },
-  ];
-
-  const missingProofCsvColumns: CsvColumn<AccountingExpenseRow>[] = [
-    { key: "requestNumber", header: "요청번호" },
-    { key: "usedDate", header: "사용일" },
-    { key: "requestedDate", header: "요청일" },
-    { key: "employeeName", header: "직원명" },
-    { key: "department", header: "부서" },
-    { key: "projectName", header: "프로젝트명" },
-    { key: "categoryName", header: "경비유형" },
-    { key: "vendor", header: "사용처" },
-    { key: "amount", header: "금액" },
-    { key: "approvalStatus", header: "상태" },
-    { key: "attachmentStatus", header: "증빙상태" },
-    { key: "memo", header: "메모" },
-  ];
-
-  const exportCsv = <T,>(
-    label: string,
-    rows: T[],
-    columns: CsvColumn<T>[],
-    fileName: string,
-  ) => {
-    if (rows.length === 0) {
-      setExportFeedback({ tone: "info", message: "내보낼 데이터가 없습니다." });
-      return;
-    }
-
-    try {
-      const content = createCsvContent(rows, columns);
-      downloadCsvFile(fileName, content);
-      setExportFeedback({
-        tone: "success",
-        message: `${label} CSV 다운로드를 시작했습니다.`,
-      });
-    } catch (error) {
-      setExportFeedback({
-        tone: "error",
-        message:
-          error instanceof Error ? error.message : "CSV 파일을 생성하지 못했습니다.",
-      });
-    }
-  };
-
-  const handleDownloadAllAccountingCsv = () => {
-    const sections = [
-      {
-        title: "전체 지출 내역",
-        rowCount: accountingRows.length,
-        content: createCsvContent(accountingRows, allExpenseCsvColumns),
-      },
-      {
-        title: "직원별 정산 내역",
-        rowCount: employeeSettlementExportRows.length,
-        content: createCsvContent(
-          employeeSettlementExportRows,
-          employeeSettlementCsvColumns,
-        ),
-      },
-      {
-        title: "프로젝트별 지출",
-        rowCount: projectExportRows.length,
-        content: createCsvContent(projectExportRows, projectCsvColumns),
-      },
-      {
-        title: "경비 유형별 지출",
-        rowCount: categoryExpenseRows.length,
-        content: createCsvContent(categoryExpenseRows, categoryCsvColumns),
-      },
-      {
-        title: "증빙 누락 목록",
-        rowCount: missingProofRows.length,
-        content: createCsvContent(missingProofRows, missingProofCsvColumns),
-      },
-      {
-        title: "반려/수정요청 목록",
-        rowCount: rejectedRevisionRows.length,
-        content: createCsvContent(rejectedRevisionRows, allExpenseCsvColumns),
-      },
-    ].filter((section) => section.rowCount > 0);
-
-    if (sections.length === 0) {
-      setExportFeedback({ tone: "info", message: "내보낼 데이터가 없습니다." });
-      return;
-    }
-
-    try {
-      const content = `\uFEFF${sections
-        .map((section) => {
-          const sectionTitle = `"${section.title.replace(/"/g, "\"\"")}"`;
-          const sectionContent = stripCsvBom(section.content);
-
-          return [sectionTitle, sectionContent].join("\r\n");
-        })
-        .join("\r\n\r\n")}`;
-
-      downloadCsvFile(getAccountingCsvFileName(selectedMonth), content);
-      setExportFeedback({
-        tone: "success",
-        message: "전체 회계자료 CSV 다운로드를 시작했습니다.",
-      });
-    } catch (error) {
-      setExportFeedback({
-        tone: "error",
-        message:
-          error instanceof Error ? error.message : "CSV 파일을 생성하지 못했습니다.",
-      });
-    }
-  };
-
   const summaryCards = [
     {
       id: "total-expense-count",
@@ -1354,6 +1082,38 @@ export default function AccountingMaterialsPage() {
       icon: <Ban className="h-5 w-5" strokeWidth={1.8} />,
     },
   ];
+
+  function exportCsvRows<T>(
+    label: string,
+    rows: T[],
+    columns: CsvColumn<T>[],
+    fileName: string,
+  ) {
+    if (rows.length === 0) {
+      setExportFeedback({
+        type: "info",
+        message: "내보낼 데이터가 없습니다.",
+      });
+      return;
+    }
+
+    try {
+      const content = createCsvContent(rows, columns);
+      downloadCsvFile(fileName, content);
+      setExportFeedback({
+        type: "success",
+        message: `${label} CSV를 다운로드했습니다.`,
+      });
+    } catch (error) {
+      setExportFeedback({
+        type: "error",
+        message: getUserFacingSupabaseMessage(
+          error,
+          "CSV 파일을 생성하지 못했습니다. 잠시 후 다시 시도해주세요.",
+        ),
+      });
+    }
+  }
 
   const renderActiveTab = () => {
     if (activeTab === "all-expenses") {
@@ -1422,6 +1182,14 @@ export default function AccountingMaterialsPage() {
               <td className="px-4 py-4 text-slate-600">{row.department}</td>
               <td className="px-4 py-4 text-right font-medium text-slate-900">
                 <AmountText value={row.approvedAmount} />
+              </td>
+              <td
+                className={[
+                  "px-4 py-4 text-right font-medium",
+                  row.pendingEvidenceAmount > 0 ? "text-amber-700" : "text-slate-500",
+                ].join(" ")}
+              >
+                <AmountText value={row.pendingEvidenceAmount} />
               </td>
               <td className="px-4 py-4 text-right text-[var(--primary)]">
                 <AmountText value={row.confirmedAmount} />
@@ -1543,6 +1311,9 @@ export default function AccountingMaterialsPage() {
                 <AmountText value={row.amount} />
               </td>
               <td className="px-4 py-4 text-center">
+                <StatusBadge status={row.attachmentStatus} />
+              </td>
+              <td className="px-4 py-4 text-center">
                 <StatusBadge status={row.approvalStatus} />
               </td>
               <td className="px-4 py-4 text-center">
@@ -1585,6 +1356,9 @@ export default function AccountingMaterialsPage() {
             <td className="px-4 py-4 text-slate-600">{row.vendor}</td>
             <td className="px-4 py-4 text-right font-medium text-slate-900">
               <AmountText value={row.amount} />
+            </td>
+            <td className="px-4 py-4 text-center">
+              <StatusBadge status={row.attachmentStatus} />
             </td>
             <td className="px-4 py-4 text-center">
               <StatusBadge status={row.approvalStatus} />
@@ -1675,7 +1449,7 @@ export default function AccountingMaterialsPage() {
           <div>
             <h3 className="text-lg font-semibold text-slate-950">CSV 다운로드</h3>
             <p className="mt-1 text-sm text-slate-500">
-              선택한 월 기준 회계 자료를 UTF-8 BOM CSV로 내려받아 세무사 또는 회계 담당자에게 전달할 수 있습니다.
+              현재 화면에 집계된 실제 Supabase 회계 데이터를 CSV로 내려받을 수 있습니다.
             </p>
           </div>
           <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
@@ -1687,9 +1461,9 @@ export default function AccountingMaterialsPage() {
           <div
             className={[
               "mt-4 rounded-2xl border px-4 py-3 text-sm",
-              exportFeedback.tone === "success"
+              exportFeedback.type === "success"
                 ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                : exportFeedback.tone === "error"
+                : exportFeedback.type === "error"
                   ? "border-rose-200 bg-rose-50 text-rose-700"
                   : "border-amber-200 bg-amber-50 text-amber-700",
             ].join(" ")}
@@ -1701,15 +1475,10 @@ export default function AccountingMaterialsPage() {
         <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {[
             {
-              key: "all-accounting",
-              label: "전체 회계자료 CSV 다운로드",
-              onClick: handleDownloadAllAccountingCsv,
-            },
-            {
               key: "all-expenses",
               label: "전체 지출 내역 CSV 다운로드",
               onClick: () =>
-                exportCsv(
+                exportCsvRows(
                   "전체 지출 내역",
                   accountingRows,
                   allExpenseCsvColumns,
@@ -1720,9 +1489,9 @@ export default function AccountingMaterialsPage() {
               key: "employee-settlements",
               label: "직원별 정산 CSV 다운로드",
               onClick: () =>
-                exportCsv(
+                exportCsvRows(
                   "직원별 정산",
-                  employeeSettlementExportRows,
+                  employeeSettlementRows,
                   employeeSettlementCsvColumns,
                   getAccountingCsvFileName(selectedMonth, "employee-settlements"),
                 ),
@@ -1731,9 +1500,9 @@ export default function AccountingMaterialsPage() {
               key: "project-expenses",
               label: "프로젝트별 지출 CSV 다운로드",
               onClick: () =>
-                exportCsv(
+                exportCsvRows(
                   "프로젝트별 지출",
-                  projectExportRows,
+                  projectExpenseRows,
                   projectCsvColumns,
                   getAccountingCsvFileName(selectedMonth, "project-expenses"),
                 ),
@@ -1742,7 +1511,7 @@ export default function AccountingMaterialsPage() {
               key: "category-expenses",
               label: "경비 유형별 지출 CSV 다운로드",
               onClick: () =>
-                exportCsv(
+                exportCsvRows(
                   "경비 유형별 지출",
                   categoryExpenseRows,
                   categoryCsvColumns,
@@ -1753,11 +1522,22 @@ export default function AccountingMaterialsPage() {
               key: "missing-proofs",
               label: "증빙 누락 목록 CSV 다운로드",
               onClick: () =>
-                exportCsv(
+                exportCsvRows(
                   "증빙 누락 목록",
                   missingProofRows,
-                  missingProofCsvColumns,
+                  issueCsvColumns,
                   getAccountingCsvFileName(selectedMonth, "missing-proofs"),
+                ),
+            },
+            {
+              key: "rejected-revisions",
+              label: "반려·수정요청 목록 CSV 다운로드",
+              onClick: () =>
+                exportCsvRows(
+                  "반려·수정요청 목록",
+                  rejectedRevisionRows,
+                  issueCsvColumns,
+                  getAccountingCsvFileName(selectedMonth, "rejected-revisions"),
                 ),
             },
           ].map((button) => (

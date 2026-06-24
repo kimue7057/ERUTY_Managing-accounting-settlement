@@ -14,7 +14,8 @@ export type StatusBadgeValue =
   | AccountingProcessingStatus
   | UserManagementStatus
   | ProjectManagementStatus
-  | "증빙미첨부";
+  | "증빙미첨부"
+  | "정산확정";
 
 type StatusBadgeProps = {
   status: StatusBadgeValue;
@@ -30,6 +31,7 @@ const statusClassMap: Record<StatusBadgeValue, string> = {
   정산대기: "border-sky-200 bg-sky-50 text-sky-700",
   지급대기: "border-[color:rgba(22,59,111,0.14)] bg-[var(--primary-soft)] text-[var(--primary)]",
   정산완료: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  정산확정: "border-[color:rgba(22,59,111,0.14)] bg-[var(--primary-soft)] text-[var(--primary)]",
   지급완료: "border-emerald-200 bg-emerald-50 text-emerald-700",
   첨부완료: "border-emerald-200 bg-emerald-50 text-emerald-700",
   확인완료: "border-sky-200 bg-sky-50 text-sky-700",

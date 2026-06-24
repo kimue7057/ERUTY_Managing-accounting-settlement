@@ -50,6 +50,12 @@ type RelationValue<T> = T | T[] | null;
 
 type SettlementRecordStatus = "confirmed" | "paid" | "on_hold";
 
+type MonthlySettlementRow = {
+  id: string;
+  final_payment_amount: number;
+  status: SettlementRecordStatus;
+};
+
 type CompanyFundRow = {
   id: string;
   name: string;
@@ -241,6 +247,7 @@ export default function FundsPage() {
   const [funds, setFunds] = useState<CompanyFundRow[]>([]);
   const [transactions, setTransactions] = useState<FundTransactionRow[]>([]);
   const [approvedExpenses, setApprovedExpenses] = useState<ApprovedExpenseRow[]>([]);
+  const [monthlySettlements, setMonthlySettlements] = useState<MonthlySettlementRow[]>([]);
   const [settlementItems, setSettlementItems] = useState<SettlementItemRow[]>([]);
   const [expenseRequestOptions, setExpenseRequestOptions] = useState<ExpenseRequestOption[]>([]);
   const [selectedFundFilter, setSelectedFundFilter] = useState("전체");
@@ -285,6 +292,7 @@ export default function FundsPage() {
         setFunds([]);
         setTransactions([]);
         setApprovedExpenses([]);
+        setMonthlySettlements([]);
         setSettlementItems([]);
         setExpenseRequestOptions([]);
         setIsLoading(false);
@@ -298,6 +306,7 @@ export default function FundsPage() {
           fundsResult,
           transactionsResult,
           approvedExpensesResult,
+          monthlySettlementsResult,
           settlementItemsResult,
           expenseRequestOptionsResult,
         ] = await Promise.all([
@@ -349,6 +358,10 @@ export default function FundsPage() {
             .select("id, amount, status, settlement_requested, payment_method")
             .eq("status", "approved"),
           supabase
+            .from("monthly_settlements")
+            .select("id, final_payment_amount, status")
+            .in("status", ["confirmed", "paid"]),
+          supabase
             .from("settlement_items")
             .select(
               `
@@ -390,14 +403,27 @@ export default function FundsPage() {
           throw approvedExpensesResult.error;
         }
 
-        const settlementSchemaError =
-          settlementItemsResult.error && isSettlementSchemaMissing(settlementItemsResult.error)
-            ? settlementItemsResult.error
-            : null;
+        const settlementSchemaError = [monthlySettlementsResult.error, settlementItemsResult.error]
+          .find((error) => error && isSettlementSchemaMissing(error)) ?? null;
 
-        if (settlementItemsResult.error && !settlementSchemaError) {
+        if (
+          monthlySettlementsResult.error &&
+          !isSettlementSchemaMissing(monthlySettlementsResult.error)
+        ) {
+          throw monthlySettlementsResult.error;
+        }
+
+        if (
+          settlementItemsResult.error &&
+          !isSettlementSchemaMissing(settlementItemsResult.error)
+        ) {
           throw settlementItemsResult.error;
         }
+
+        const normalizedSettlementSchemaError =
+          settlementSchemaError && isSettlementSchemaMissing(settlementSchemaError)
+            ? settlementSchemaError
+            : null;
 
         if (expenseRequestOptionsResult.error) {
           throw expenseRequestOptionsResult.error;
@@ -410,8 +436,15 @@ export default function FundsPage() {
         setFunds((fundsResult.data ?? []) as CompanyFundRow[]);
         setTransactions((transactionsResult.data ?? []) as FundTransactionRow[]);
         setApprovedExpenses((approvedExpensesResult.data ?? []) as ApprovedExpenseRow[]);
+        setMonthlySettlements(
+          normalizedSettlementSchemaError
+            ? []
+            : ((monthlySettlementsResult.data ?? []) as MonthlySettlementRow[]),
+        );
         setSettlementItems(
-          settlementSchemaError ? [] : ((settlementItemsResult.data ?? []) as SettlementItemRow[]),
+          normalizedSettlementSchemaError
+            ? []
+            : ((settlementItemsResult.data ?? []) as SettlementItemRow[]),
         );
         setExpenseRequestOptions(
           (expenseRequestOptionsResult.data ?? []) as ExpenseRequestOption[],
@@ -428,6 +461,7 @@ export default function FundsPage() {
           setFunds([]);
           setTransactions([]);
           setApprovedExpenses([]);
+          setMonthlySettlements([]);
           setSettlementItems([]);
           setExpenseRequestOptions([]);
         } else {
@@ -440,6 +474,7 @@ export default function FundsPage() {
           setFunds([]);
           setTransactions([]);
           setApprovedExpenses([]);
+          setMonthlySettlements([]);
           setSettlementItems([]);
           setExpenseRequestOptions([]);
         }
@@ -488,12 +523,17 @@ export default function FundsPage() {
   }, [settlementItems, transactions]);
 
   const fundOverview = useMemo(() => {
+    const confirmedSettlementAmount = monthlySettlements
+      .filter((settlement) => settlement.status === "confirmed")
+      .reduce((sum, settlement) => sum + settlement.final_payment_amount, 0);
+
     return calculateFundOverview({
       funds,
       approvedExpenses,
       handledExpenseRequestIds,
+      confirmedSettlementAmount,
     });
-  }, [approvedExpenses, funds, handledExpenseRequestIds]);
+  }, [approvedExpenses, funds, handledExpenseRequestIds, monthlySettlements]);
 
   const fundOptions = useMemo(
     () => [
