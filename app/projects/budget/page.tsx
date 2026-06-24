@@ -30,7 +30,6 @@ import {
 } from "@/utils/expenseRequests";
 import {
   calculateProjectBudgetMetrics,
-  getApprovedExpenseAmount,
   getBudgetHealthBadgeClassName,
   getBudgetHealthProgressTone,
   toBudgetNumber,
@@ -61,7 +60,6 @@ type ProjectExpenseRequestRow = {
   id: string;
   project_id: string | null;
   amount: number;
-  approved_amount: number | string | null;
   status: DbExpenseStatus;
   expense_date: string;
   requested_at: string | null;
@@ -196,17 +194,13 @@ function buildProjectSummary(
   expenseRequests: ProjectExpenseRequestRow[],
 ): ProjectSummary {
   const projectRows = expenseRequests.filter((row) => row.project_id === project.id);
-  const approvedRows = projectRows.filter((row) => row.status === "approved");
   const pendingRows = projectRows.filter(
     (row) => row.status === "submitted" || row.status === "revision_requested",
   );
-  const approvedAmount = approvedRows.reduce(
-    (sum, row) => sum + getApprovedExpenseAmount(row),
-    0,
-  );
   const budgetMetrics = calculateProjectBudgetMetrics(
     toBudgetNumber(project.budget_amount),
-    approvedAmount,
+    toBudgetNumber(project.used_amount),
+    project.budget_status,
   );
 
   const categoryMap = new Map<string, CategoryAggregate>();
@@ -225,7 +219,7 @@ function buildProjectSummary(
     current.requestCount += 1;
 
     if (row.status === "approved") {
-      current.approvedAmount += getApprovedExpenseAmount(row);
+      current.approvedAmount += row.amount;
     }
 
     if (row.status === "submitted" || row.status === "revision_requested") {
@@ -256,7 +250,7 @@ function buildProjectSummary(
     statusLabel: mapProjectStatusLabel(project.status),
     requestCount: projectRows.length,
     totalRequestedAmount: projectRows.reduce((sum, row) => sum + row.amount, 0),
-    approvedAmount,
+    approvedAmount: budgetMetrics.usedAmount,
     pendingAmount: pendingRows.reduce((sum, row) => sum + row.amount, 0),
     recentRequestDate:
       [...projectRows]
@@ -314,7 +308,6 @@ export default function ProjectBudgetPage() {
                 id,
                 project_id,
                 amount,
-                approved_amount,
                 status,
                 expense_date,
                 requested_at,

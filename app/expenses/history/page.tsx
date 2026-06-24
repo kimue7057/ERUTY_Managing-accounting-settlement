@@ -26,12 +26,22 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 import type {
-  AttachmentStatus,
   ExpenseHistoryItem,
   ExpenseStatus,
   PaymentMethod,
-  SettlementRequestOption,
 } from "@/types";
+import {
+  formatSupabaseDate,
+  getRequestSortValue,
+  getSingleRelation,
+  mapDbEvidenceStatus,
+  mapDbExpenseStatus,
+  mapDbPaymentMethod,
+  mapSettlementRequested,
+  type DbEvidenceStatus,
+  type DbExpenseStatus,
+  type DbPaymentMethod,
+} from "@/utils/expenseRequests";
 import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 const tableColumns = [
@@ -72,6 +82,12 @@ const summaryDefinitions = [
   },
 ] as const;
 
+const currentMonthFormatter = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "Asia/Seoul",
+  year: "numeric",
+  month: "2-digit",
+});
+
 type ExpenseHistoryRequesterRelation = {
   id: string;
   name: string;
@@ -99,23 +115,15 @@ type ExpenseRequestHistoryRow = {
   expense_date: string;
   vendor: string;
   amount: number;
-  payment_method: "personal_card" | "corporate_card" | "cash" | "bank_transfer";
+  payment_method: DbPaymentMethod;
   settlement_requested: boolean;
-  status:
-    | "draft"
-    | "submitted"
-    | "approved"
-    | "rejected"
-    | "revision_requested"
-    | "settlement_pending"
-    | "settled"
-    | "on_hold";
-  evidence_status: "none" | "attached";
-  requested_at: string;
-  created_at: string;
-  requester: ExpenseHistoryRequesterRelation[];
-  project: ExpenseHistoryProjectRelation[];
-  category: ExpenseHistoryCategoryRelation[];
+  status: DbExpenseStatus;
+  evidence_status: DbEvidenceStatus;
+  requested_at: string | null;
+  created_at: string | null;
+  requester: ExpenseHistoryRequesterRelation[] | null;
+  project: ExpenseHistoryProjectRelation[] | null;
+  category: ExpenseHistoryCategoryRelation[] | null;
 };
 
 type ExpenseHistoryRecord = ExpenseHistoryItem & {
@@ -123,30 +131,9 @@ type ExpenseHistoryRecord = ExpenseHistoryItem & {
   requesterName: string;
   requesterDepartment: string;
   projectName: string;
+  requestedAtSource: string;
+  approvedAmountValue: number;
 };
-
-const currentMonthFormatter = new Intl.DateTimeFormat("sv-SE", {
-  timeZone: "Asia/Seoul",
-  year: "numeric",
-  month: "2-digit",
-});
-
-const currentDateFormatter = new Intl.DateTimeFormat("sv-SE", {
-  timeZone: "Asia/Seoul",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-function formatDateOnly(value: string) {
-  const parsedDate = new Date(value);
-
-  if (Number.isNaN(parsedDate.getTime())) {
-    return value.slice(0, 10);
-  }
-
-  return currentDateFormatter.format(parsedDate);
-}
 
 function getMonthKey(value: string) {
   const parsedDate = new Date(value);
@@ -157,80 +144,32 @@ function getMonthKey(value: string) {
 
   return currentMonthFormatter.format(parsedDate);
 }
-
-function mapPaymentMethod(
-  paymentMethod: ExpenseRequestHistoryRow["payment_method"],
-): PaymentMethod {
-  switch (paymentMethod) {
-    case "personal_card":
-      return "개인카드";
-    case "corporate_card":
-      return "법인카드";
-    case "cash":
-      return "현금";
-    case "bank_transfer":
-      return "계좌이체";
-    default:
-      return "개인카드";
-  }
-}
-
-function mapExpenseStatus(status: ExpenseRequestHistoryRow["status"]): ExpenseStatus {
-  switch (status) {
-    case "draft":
-    case "submitted":
-      return "승인대기";
-    case "approved":
-      return "승인완료";
-    case "rejected":
-      return "반려";
-    case "revision_requested":
-      return "수정요청";
-    case "settlement_pending":
-      return "정산대기";
-    case "settled":
-      return "정산완료";
-    case "on_hold":
-      return "보류";
-    default:
-      return "승인대기";
-  }
-}
-
-function mapAttachmentStatus(
-  evidenceStatus: ExpenseRequestHistoryRow["evidence_status"],
-): AttachmentStatus {
-  return evidenceStatus === "attached" ? "첨부완료" : "미첨부";
-}
-
-function mapSettlementRequest(settlementRequested: boolean): SettlementRequestOption {
-  return settlementRequested ? "정산 요청" : "정산 요청 안 함";
-}
-
 function mapExpenseRequestToHistoryRecord(
   row: ExpenseRequestHistoryRow,
 ): ExpenseHistoryRecord {
-  const requester = row.requester[0] ?? null;
-  const project = row.project[0] ?? null;
-  const category = row.category[0] ?? null;
-  const requestedAtValue = row.requested_at || row.created_at;
+  const requester = getSingleRelation(row.requester);
+  const project = getSingleRelation(row.project);
+  const category = getSingleRelation(row.category);
+  const requestedAtValue = getRequestSortValue(row);
 
   return {
     id: row.id,
     requestNumber: row.request_no,
     title: row.title,
     expenseType: category?.name ?? "기타",
-    usedDate: formatDateOnly(row.expense_date),
+    usedDate: formatSupabaseDate(row.expense_date),
     merchantName: row.vendor,
     amount: row.amount,
-    paymentMethod: mapPaymentMethod(row.payment_method),
-    settlementRequest: mapSettlementRequest(row.settlement_requested),
-    status: mapExpenseStatus(row.status),
-    attachmentStatus: mapAttachmentStatus(row.evidence_status),
-    requestedAt: formatDateOnly(requestedAtValue),
+    paymentMethod: mapDbPaymentMethod(row.payment_method),
+    settlementRequest: mapSettlementRequested(row.settlement_requested),
+    status: mapDbExpenseStatus(row.status),
+    attachmentStatus: mapDbEvidenceStatus(row.evidence_status),
+    requestedAt: formatSupabaseDate(requestedAtValue),
     requesterName: requester?.name ?? "미지정 사용자",
     requesterDepartment: requester?.department ?? "-",
     projectName: project?.name ?? "미지정 프로젝트",
+    requestedAtSource: requestedAtValue,
+    approvedAmountValue: row.status === "approved" ? row.amount : 0,
   };
 }
 
@@ -383,11 +322,21 @@ export default function ExpenseHistoryPage() {
   const summaryValues = useMemo(() => {
     const currentMonthKey = getMonthKey(new Date().toISOString());
     const currentMonthItems = historyItems.filter(
-      (item) => getMonthKey(item.requestedAt) === currentMonthKey,
+      (item) => getMonthKey(item.requestedAtSource) === currentMonthKey,
     );
 
-    const approvedStatuses = new Set<ExpenseStatus>(["승인완료", "정산대기", "정산완료"]);
-    const settlementStatuses = new Set<ExpenseStatus>(["승인완료", "정산대기"]);
+    const approvedStatuses = new Set<ExpenseStatus>([
+      "승인완료",
+      "정산대기",
+      "정산완료",
+      "지급완료",
+    ]);
+    const settlementStatuses = new Set<ExpenseStatus>([
+      "승인완료",
+      "정산대기",
+      "정산완료",
+      "지급완료",
+    ]);
     const rejectedOrHoldStatuses = new Set<ExpenseStatus>(["반려", "보류"]);
     const settlementPaymentMethods = new Set<PaymentMethod>(["개인카드", "현금"]);
 
@@ -395,7 +344,7 @@ export default function ExpenseHistoryPage() {
       "requested-amount": currentMonthItems.reduce((sum, item) => sum + item.amount, 0),
       "approved-amount": currentMonthItems
         .filter((item) => approvedStatuses.has(item.status))
-        .reduce((sum, item) => sum + item.amount, 0),
+        .reduce((sum, item) => sum + item.approvedAmountValue, 0),
       "settlement-scheduled-amount": currentMonthItems
         .filter(
           (item) =>
@@ -403,7 +352,7 @@ export default function ExpenseHistoryPage() {
             item.settlementRequest === "정산 요청" &&
             settlementPaymentMethods.has(item.paymentMethod),
         )
-        .reduce((sum, item) => sum + item.amount, 0),
+        .reduce((sum, item) => sum + item.approvedAmountValue, 0),
       "rejected-hold-amount": currentMonthItems
         .filter((item) => rejectedOrHoldStatuses.has(item.status))
         .reduce((sum, item) => sum + item.amount, 0),

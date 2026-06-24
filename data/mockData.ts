@@ -175,7 +175,7 @@ export const projectBudgets: ProjectBudget[] = [
 
 const normalBudgetStatus: BudgetHealthStatus = "정상";
 const warningBudgetStatus: BudgetHealthStatus = "주의";
-const riskBudgetStatus: BudgetHealthStatus = "초과위험";
+const riskBudgetStatus: BudgetHealthStatus = "주의";
 const overBudgetStatus: BudgetHealthStatus = "초과";
 
 export const projectBudgetSummaryItems: ProjectBudgetSummaryItem[] = [

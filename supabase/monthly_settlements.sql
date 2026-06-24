@@ -21,6 +21,7 @@ create table if not exists public.monthly_settlements (
   confirmed_at timestamptz,
   paid_at timestamptz,
   created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
   unique (settlement_month, employee_id)
 );
 
@@ -45,6 +46,26 @@ create index if not exists idx_settlement_items_settlement_id
 
 create index if not exists idx_settlement_items_expense_request_id
   on public.settlement_items (expense_request_id);
+
+alter table public.monthly_settlements
+  add column if not exists updated_at timestamptz not null default timezone('utc', now());
+
+create or replace function public.set_monthly_settlements_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = timezone('utc', now());
+  return new;
+end;
+$$;
+
+drop trigger if exists set_monthly_settlements_updated_at on public.monthly_settlements;
+
+create trigger set_monthly_settlements_updated_at
+before update on public.monthly_settlements
+for each row
+execute function public.set_monthly_settlements_updated_at();
 
 alter table public.monthly_settlements enable row level security;
 alter table public.settlement_items enable row level security;

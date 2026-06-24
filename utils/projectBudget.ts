@@ -1,7 +1,13 @@
 import type { BudgetHealthStatus } from "@/types";
 
-export type DbProjectBudgetStatus = "normal" | "warning" | "at_risk" | "over";
-export type DbProjectBudgetLogType = "approval_applied";
+export type DbProjectBudgetStatus =
+  | "normal"
+  | "warning"
+  | "exceeded"
+  | "at_risk"
+  | "over";
+
+export type DbProjectBudgetLogType = "expense_approved" | "approval_applied";
 
 export function toBudgetNumber(value: number | string | null | undefined) {
   if (typeof value === "number") {
@@ -14,17 +20,6 @@ export function toBudgetNumber(value: number | string | null | undefined) {
   }
 
   return 0;
-}
-
-export function getApprovedExpenseAmount(row: {
-  amount: number;
-  approved_amount?: number | string | null;
-}) {
-  if (row.approved_amount === null || row.approved_amount === undefined || row.approved_amount === "") {
-    return row.amount;
-  }
-
-  return toBudgetNumber(row.approved_amount);
 }
 
 export function getBudgetUsageRate(budgetAmount: number, usedAmount: number) {
@@ -41,36 +36,45 @@ export function getBudgetHealthStatus(usageRate: number): BudgetHealthStatus {
   }
 
   if (usageRate >= 80) {
-    return "초과위험";
-  }
-
-  if (usageRate >= 60) {
     return "주의";
   }
 
   return "정상";
 }
 
-export function mapBudgetHealthStatusToDb(status: BudgetHealthStatus): DbProjectBudgetStatus {
+export function mapBudgetHealthStatusToDb(
+  status: BudgetHealthStatus,
+): DbProjectBudgetStatus {
   switch (status) {
     case "주의":
       return "warning";
-    case "초과위험":
-      return "at_risk";
     case "초과":
-      return "over";
+      return "exceeded";
     case "정상":
     default:
       return "normal";
   }
 }
 
+export function mapDbBudgetStatusToDisplay(
+  status: DbProjectBudgetStatus | null | undefined,
+  usageRate: number,
+): BudgetHealthStatus {
+  if (status === "exceeded" || status === "over") {
+    return "초과";
+  }
+
+  if (status === "warning" || status === "at_risk") {
+    return "주의";
+  }
+
+  return getBudgetHealthStatus(usageRate);
+}
+
 export function getBudgetHealthProgressTone(status: BudgetHealthStatus) {
   switch (status) {
     case "주의":
       return "warning" as const;
-    case "초과위험":
-      return "risk" as const;
     case "초과":
       return "danger" as const;
     case "정상":
@@ -83,8 +87,6 @@ export function getBudgetHealthBadgeClassName(status: BudgetHealthStatus) {
   switch (status) {
     case "주의":
       return "border-amber-200 bg-amber-50 text-amber-700";
-    case "초과위험":
-      return "border-orange-200 bg-orange-50 text-orange-700";
     case "초과":
       return "border-rose-200 bg-rose-50 text-rose-700";
     case "정상":
@@ -96,12 +98,13 @@ export function getBudgetHealthBadgeClassName(status: BudgetHealthStatus) {
 export function calculateProjectBudgetMetrics(
   budgetAmount: number | string | null | undefined,
   usedAmount: number | string | null | undefined,
+  budgetStatus?: DbProjectBudgetStatus | null,
 ) {
   const normalizedBudgetAmount = Math.max(toBudgetNumber(budgetAmount), 0);
   const normalizedUsedAmount = Math.max(toBudgetNumber(usedAmount), 0);
   const remainingAmount = normalizedBudgetAmount - normalizedUsedAmount;
   const usageRate = getBudgetUsageRate(normalizedBudgetAmount, normalizedUsedAmount);
-  const status = getBudgetHealthStatus(usageRate);
+  const status = mapDbBudgetStatusToDisplay(budgetStatus, usageRate);
 
   return {
     budgetAmount: normalizedBudgetAmount,

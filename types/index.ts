@@ -38,7 +38,8 @@ export type ExpenseStatus =
   | "반려"
   | "보류"
   | "정산대기"
-  | "정산완료";
+  | "정산완료"
+  | "지급완료";
 
 export type RecentExpense = {
   draftNumber: string;
@@ -59,7 +60,7 @@ export type PendingApproval = {
   urgency: UrgencyLevel;
 };
 
-export type BudgetHealthStatus = "정상" | "주의" | "초과위험" | "초과";
+export type BudgetHealthStatus = "정상" | "주의" | "초과";
 
 export type ProjectBudget = {
   id: string;
@@ -118,7 +119,7 @@ export type ExpenseRequestFieldKey =
 
 export type ExpenseRequestErrors = Partial<Record<ExpenseRequestFieldKey, string>>;
 
-export type AttachmentStatus = "첨부완료" | "미첨부";
+export type AttachmentStatus = "첨부완료" | "확인완료" | "미첨부";
 
 export type ExpenseHistoryItem = {
   requestNumber: string;

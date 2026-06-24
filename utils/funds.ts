@@ -1,4 +1,7 @@
-import type { DbExpenseStatus } from "@/utils/expenseRequests";
+import type {
+  DbExpenseStatus,
+  DbPaymentMethod,
+} from "@/utils/expenseRequests";
 
 export type DbFundType =
   | "operating_account"
@@ -26,6 +29,8 @@ type ApprovedExpenseSource = {
   id: string;
   amount: number;
   status: DbExpenseStatus;
+  settlement_requested: boolean;
+  payment_method: DbPaymentMethod;
 };
 
 export function mapFundTypeLabel(fundType: DbFundType) {
@@ -101,25 +106,64 @@ export function isFundSchemaMissing(error: unknown) {
   );
 }
 
+export function isSettlementSchemaMissing(error: unknown) {
+  if (!(typeof error === "object" && error !== null && "message" in error)) {
+    return false;
+  }
+
+  const message =
+    typeof error.message === "string" ? error.message.toLowerCase().trim() : "";
+
+  return (
+    /(monthly_settlements|settlement_items)/i.test(message) &&
+    /(does not exist|schema cache|could not find)/i.test(message)
+  );
+}
+
+export function isFundTransactionRpcMissing(error: unknown) {
+  if (!(typeof error === "object" && error !== null && "message" in error)) {
+    return false;
+  }
+
+  const message =
+    typeof error.message === "string" ? error.message.toLowerCase().trim() : "";
+
+  return (
+    /create_fund_transaction/i.test(message) &&
+    /(does not exist|schema cache|could not find)/i.test(message)
+  );
+}
+
 export function calculateFundOverview({
   funds,
   approvedExpenses,
   handledExpenseRequestIds,
-  settlementPendingAmount,
 }: {
   funds: FundBalanceSource[];
   approvedExpenses: ApprovedExpenseSource[];
   handledExpenseRequestIds: Set<string>;
-  settlementPendingAmount: number;
 }) {
   const totalFunds = funds
     .filter((fund) => fund.status === "active")
     .reduce((sum, fund) => sum + fund.current_balance, 0);
 
-  const approvedExpensePendingAmount = approvedExpenses
+  const pendingApprovedExpenses = approvedExpenses.filter(
+    (expense) => expense.status === "approved" && !handledExpenseRequestIds.has(expense.id),
+  );
+
+  const settlementPendingAmount = pendingApprovedExpenses
     .filter(
       (expense) =>
-        expense.status === "approved" && !handledExpenseRequestIds.has(expense.id),
+        expense.settlement_requested &&
+        (expense.payment_method === "personal_card" || expense.payment_method === "cash"),
+    )
+    .reduce((sum, expense) => sum + expense.amount, 0);
+
+  const approvedExpensePendingAmount = pendingApprovedExpenses
+    .filter(
+      (expense) =>
+        !expense.settlement_requested ||
+        (expense.payment_method !== "personal_card" && expense.payment_method !== "cash"),
     )
     .reduce((sum, expense) => sum + expense.amount, 0);
 

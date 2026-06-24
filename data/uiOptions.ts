@@ -20,6 +20,7 @@ export const expenseHistoryStatusOptions = [
   "보류",
   "정산대기",
   "정산완료",
+  "지급완료",
 ] as const;
 
 export const expenseHistoryTypeOptions = [

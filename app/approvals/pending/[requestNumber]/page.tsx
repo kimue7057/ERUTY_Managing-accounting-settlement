@@ -38,6 +38,7 @@ import {
   inferUrgencyLevel,
   isSettlementTargetPaymentMethod,
   mapAttachmentFileType,
+  mapDbEvidenceStatus,
   mapDbExpenseStatus,
   mapDbPaymentMethod,
   mapSettlementRequested,
@@ -49,7 +50,6 @@ import {
 } from "@/utils/expenseRequests";
 import {
   calculateProjectBudgetMetrics,
-  getApprovedExpenseAmount,
   toBudgetNumber,
   type DbProjectBudgetStatus,
 } from "@/utils/projectBudget";
@@ -111,7 +111,6 @@ type ExpenseRequestDetailRow = {
   expense_date: string;
   vendor: string;
   amount: number;
-  approved_amount: number | string | null;
   payment_method: DbPaymentMethod;
   settlement_requested: boolean;
   attendees: string | null;
@@ -261,7 +260,7 @@ function getDefaultSettlementProcessing(item: ApprovalDetailItem): SettlementPro
     return "정산 대상 아님";
   }
 
-  return item.attachmentStatus === "첨부완료" ? "월말 정산 포함" : "정산 보류";
+  return item.attachmentStatus === "미첨부" ? "정산 보류" : "월말 정산 포함";
 }
 
 function getDefaultDecision(item: ApprovalDetailItem): ReviewDecision {
@@ -321,16 +320,13 @@ function mapBaseRequestToDetailItem(
     projectUsedBudget: toBudgetNumber(project?.used_amount),
     projectRemainingBudget: toBudgetNumber(project?.remaining_amount),
     projectBudgetConfigured: toBudgetNumber(project?.budget_amount) > 0,
-    currentApprovedAmount:
-      row.status === "approved"
-        ? getApprovedExpenseAmount({
-            amount: row.amount,
-            approved_amount: row.approved_amount,
-          })
-        : 0,
+    currentApprovedAmount: row.status === "approved" ? row.amount : 0,
     budgetCategory: category?.name ?? "미분류",
     status: mapDbExpenseStatus(row.status),
-    attachmentStatus: attachments.length > 0 ? "첨부완료" : "미첨부",
+    attachmentStatus:
+      attachments.length > 0 && mapDbEvidenceStatus(row.evidence_status) === "미첨부"
+        ? "첨부완료"
+        : mapDbEvidenceStatus(row.evidence_status),
     attachments,
     adminMemo: row.reject_reason ?? "",
   };
@@ -492,7 +488,6 @@ export default function ApprovalDetailReviewPage() {
               expense_date,
               vendor,
               amount,
-              approved_amount,
               payment_method,
               settlement_requested,
               attendees,
@@ -676,7 +671,7 @@ export default function ApprovalDetailReviewPage() {
 
   const requestedAmount = detailItem?.amount ?? 0;
   const numericApprovedAmount = Number(approvedAmount);
-  const hasAttachment = Boolean(detailItem?.attachments.length);
+  const hasAttachment = detailItem?.attachmentStatus !== "미첨부";
   const isPartialApproval =
     approvedAmount.trim().length > 0 &&
     numericApprovedAmount > 0 &&
@@ -735,19 +730,12 @@ export default function ApprovalDetailReviewPage() {
 
     if (projectedProjectBudget.remainingAmount < 0) {
       return {
-        label: `예산 초과 예상 (${projectedProjectBudget.usageRate}%)`,
+        label: `초과 (${projectedProjectBudget.usageRate}%)`,
         tone: "danger" as const,
       };
     }
 
     if (projectedProjectBudget.usageRate >= 80) {
-      return {
-        label: `초과위험 (${projectedProjectBudget.usageRate}%)`,
-        tone: "warning" as const,
-      };
-    }
-
-    if (projectedProjectBudget.usageRate >= 60) {
       return {
         label: `주의 (${projectedProjectBudget.usageRate}%)`,
         tone: "warning" as const,
@@ -801,6 +789,9 @@ export default function ApprovalDetailReviewPage() {
       nextErrors.approvedAmount = "승인 금액은 0원보다 작을 수 없습니다.";
     } else if (numericApprovedAmount > requestedAmount) {
       nextErrors.approvedAmount = "승인 금액은 요청 금액보다 클 수 없습니다.";
+    } else if (decision === "승인" && numericApprovedAmount !== requestedAmount) {
+      nextErrors.approvedAmount =
+        "현재는 승인 금액을 별도 저장하지 않으므로 요청 금액과 동일하게 승인해주세요.";
     }
 
     if ((decision === "반려" || decision === "수정요청") && adminMemo.trim().length === 0) {
@@ -821,7 +812,7 @@ export default function ApprovalDetailReviewPage() {
       projectedProjectBudget.remainingAmount < 0
     ) {
       const shouldContinue = window.confirm(
-        `이 승인으로 프로젝트 예산이 ${Math.abs(projectedProjectBudget.remainingAmount).toLocaleString("ko-KR")}원 초과됩니다. 그래도 승인하시겠습니까?`,
+        "프로젝트 잔여 예산을 초과합니다. 그래도 승인하시겠습니까?",
       );
 
       if (!shouldContinue) {
@@ -888,19 +879,17 @@ export default function ApprovalDetailReviewPage() {
       const nextStatus = getStatusFromDecision(decision);
       const approvedAt = decision === "승인" ? new Date().toISOString() : null;
       const normalizedAdminMemo = adminMemo.trim();
-      const nextApprovedAmount = decision === "승인" ? numericApprovedAmount : null;
 
       const { error: updateError } = await supabase
         .from("expense_requests")
         .update({
           status: nextStatus,
           approved_at: approvedAt,
-          approved_amount: nextApprovedAmount,
           approver_id: profile.id,
           reject_reason: normalizedAdminMemo.length > 0 ? normalizedAdminMemo : null,
         })
         .eq("id", detailItem.id)
-        .select("id, status, approved_amount")
+        .select("id, status")
         .single();
 
       if (updateError) {

@@ -70,5 +70,108 @@ before update on public.company_funds
 for each row
 execute function public.set_updated_at();
 
+create or replace function public.create_fund_transaction(
+  p_fund_id uuid,
+  p_transaction_type text,
+  p_amount integer,
+  p_title text,
+  p_description text default '',
+  p_transaction_date date default timezone('utc', now())::date,
+  p_related_expense_request_id uuid default null,
+  p_adjustment_direction text default 'increase'
+)
+returns public.fund_transactions
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  target_fund public.company_funds;
+  normalized_title text;
+  normalized_description text;
+  normalized_delta integer;
+  saved_transaction public.fund_transactions;
+begin
+  normalized_title := btrim(coalesce(p_title, ''));
+  normalized_description := btrim(coalesce(p_description, ''));
+
+  if p_amount is null or p_amount <= 0 then
+    raise exception 'Transaction amount must be greater than zero.';
+  end if;
+
+  if normalized_title = '' then
+    raise exception 'Transaction title is required.';
+  end if;
+
+  if p_transaction_type not in ('deposit', 'withdrawal', 'transfer', 'adjustment') then
+    raise exception 'Unsupported transaction type: %', p_transaction_type;
+  end if;
+
+  if p_transaction_type = 'adjustment'
+    and p_adjustment_direction not in ('increase', 'decrease') then
+    raise exception 'Unsupported adjustment direction: %', p_adjustment_direction;
+  end if;
+
+  select *
+  into target_fund
+  from public.company_funds
+  where id = p_fund_id
+  for update;
+
+  if not found then
+    raise exception 'Target fund not found.';
+  end if;
+
+  if target_fund.status <> 'active' then
+    raise exception 'Inactive fund cannot receive transactions.';
+  end if;
+
+  normalized_delta := case
+    when p_transaction_type = 'deposit' then p_amount
+    when p_transaction_type in ('withdrawal', 'transfer') then p_amount * -1
+    when p_adjustment_direction = 'decrease' then p_amount * -1
+    else p_amount
+  end;
+
+  update public.company_funds
+  set current_balance = current_balance + normalized_delta
+  where id = target_fund.id;
+
+  insert into public.fund_transactions (
+    fund_id,
+    transaction_type,
+    amount,
+    title,
+    description,
+    transaction_date,
+    related_expense_request_id
+  )
+  values (
+    target_fund.id,
+    p_transaction_type,
+    normalized_delta,
+    normalized_title,
+    normalized_description,
+    p_transaction_date,
+    p_related_expense_request_id
+  )
+  returning *
+  into saved_transaction;
+
+  return saved_transaction;
+end;
+$$;
+
+grant execute on function public.create_fund_transaction(
+  uuid,
+  text,
+  integer,
+  text,
+  text,
+  date,
+  uuid,
+  text
+) to authenticated;
+
 alter table public.company_funds enable row level security;
 alter table public.fund_transactions enable row level security;

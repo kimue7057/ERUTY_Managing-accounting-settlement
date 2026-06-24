@@ -37,11 +37,11 @@ import {
 import {
   calculateFundOverview,
   isFundSchemaMissing,
+  isSettlementSchemaMissing,
   type DbFundStatus,
 } from "@/utils/funds";
 import {
   calculateProjectBudgetMetrics,
-  getApprovedExpenseAmount,
   type DbProjectBudgetStatus,
 } from "@/utils/projectBudget";
 import { isAdmin, isManagerOrAdmin, mapAuthRoleLabel } from "@/utils/auth";
@@ -78,7 +78,6 @@ type DashboardExpenseRequestRow = {
   request_no: string;
   title: string;
   amount: number;
-  approved_amount: number | string | null;
   expense_date: string;
   requested_at: string | null;
   created_at: string | null;
@@ -237,7 +236,6 @@ export default function Home() {
               request_no,
               title,
               amount,
-              approved_amount,
               expense_date,
               requested_at,
               created_at,
@@ -334,13 +332,17 @@ export default function Home() {
         }
 
         const fundErrors = canViewFunds
-          ? [
-              companyFundsResult.error,
-              monthlySettlementsResult.error,
-              settlementItemsResult.error,
-              fundTransactionsResult.error,
-            ].filter(Boolean)
+          ? [companyFundsResult.error, fundTransactionsResult.error].filter(Boolean)
           : [];
+        const settlementSchemaError = canViewFunds
+          ? [monthlySettlementsResult.error, settlementItemsResult.error]
+              .filter(Boolean)
+              .find((error) => isSettlementSchemaMissing(error))
+          : null;
+        const settlementErrors =
+          canViewFunds && !settlementSchemaError
+            ? [monthlySettlementsResult.error, settlementItemsResult.error].filter(Boolean)
+            : [];
 
         const fundSchemaError = fundErrors.find((error) => isFundSchemaMissing(error));
 
@@ -357,10 +359,10 @@ export default function Home() {
           setMonthlySettlements([]);
           setSettlementItems([]);
           setFundTransactions([]);
-        } else if (fundErrors.length > 0) {
+        } else if (fundErrors.length > 0 || settlementErrors.length > 0) {
           setFundsNotice(
             getUserFacingSupabaseMessage(
-              fundErrors[0],
+              fundErrors[0] ?? settlementErrors[0],
               "회사 자금 요약 데이터를 불러오지 못했습니다.",
             ),
           );
@@ -370,8 +372,16 @@ export default function Home() {
           setFundTransactions([]);
         } else {
           setCompanyFunds((companyFundsResult.data ?? []) as CompanyFundRow[]);
-          setMonthlySettlements((monthlySettlementsResult.data ?? []) as MonthlySettlementRow[]);
-          setSettlementItems((settlementItemsResult.data ?? []) as SettlementItemRow[]);
+          setMonthlySettlements(
+            settlementSchemaError
+              ? []
+              : ((monthlySettlementsResult.data ?? []) as MonthlySettlementRow[]),
+          );
+          setSettlementItems(
+            settlementSchemaError
+              ? []
+              : ((settlementItemsResult.data ?? []) as SettlementItemRow[]),
+          );
           setFundTransactions((fundTransactionsResult.data ?? []) as FundTransactionRow[]);
         }
       } catch (error) {
@@ -440,12 +450,12 @@ export default function Home() {
       const categoryName = getSingleRelation(row.category)?.name ?? "기타";
       categoryAmountMap.set(
         categoryName,
-        (categoryAmountMap.get(categoryName) ?? 0) + getApprovedExpenseAmount(row),
+        (categoryAmountMap.get(categoryName) ?? 0) + row.amount,
       );
     });
 
     const approvedCurrentMonthAmount = currentMonthApprovedRequests.reduce(
-      (sum, row) => sum + getApprovedExpenseAmount(row),
+      (sum, row) => sum + row.amount,
       0,
     );
     const paidCurrentMonthAmount = fundTransactions
@@ -466,7 +476,7 @@ export default function Home() {
 
       approvedExpenseByProjectId.set(
         projectId,
-        (approvedExpenseByProjectId.get(projectId) ?? 0) + getApprovedExpenseAmount(row),
+        (approvedExpenseByProjectId.get(projectId) ?? 0) + row.amount,
       );
     });
 
@@ -474,11 +484,12 @@ export default function Home() {
       funds: companyFunds,
       approvedExpenses: approvedRequests.map((row) => ({
         id: row.id,
-        amount: getApprovedExpenseAmount(row),
+        amount: row.amount,
         status: row.status,
+        settlement_requested: row.settlement_requested,
+        payment_method: row.payment_method,
       })),
       handledExpenseRequestIds,
-      settlementPendingAmount: settlementPlannedAmount,
     });
 
     const recentExpenseItems = [...expenseRequests]
@@ -494,8 +505,11 @@ export default function Home() {
 
     const projectBudgetItems: ProjectBudget[] = projects
       .map((project) => {
-        const spentBudget = approvedExpenseByProjectId.get(project.id) ?? 0;
-        const metrics = calculateProjectBudgetMetrics(project.budget_amount ?? 0, spentBudget);
+        const metrics = calculateProjectBudgetMetrics(
+          project.budget_amount ?? 0,
+          project.used_amount ?? approvedExpenseByProjectId.get(project.id) ?? 0,
+          project.budget_status,
+        );
 
         return {
           id: project.id,
@@ -528,7 +542,7 @@ export default function Home() {
             row.settlement_requested &&
             (row.payment_method === "personal_card" || row.payment_method === "cash"),
         )
-        .reduce((sum, row) => sum + getApprovedExpenseAmount(row), 0),
+        .reduce((sum, row) => sum + row.amount, 0),
       totalFunds: fundOverview.totalFunds,
       availableFunds: fundOverview.availableFunds,
       approvedPendingAmount: fundOverview.approvedExpensePendingAmount,

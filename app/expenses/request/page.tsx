@@ -401,15 +401,25 @@ export default function ExpenseRequestPage() {
         }
 
         if (projectsResult.error || categoriesResult.error) {
-          setReferenceError("기준 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
+          setReferenceError(
+            getUserFacingSupabaseMessage(
+              projectsResult.error ?? categoriesResult.error,
+              "기준 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.",
+            ),
+          );
           return;
         }
 
         setProjectOptions(projectsResult.data ?? []);
         setExpenseCategoryOptions(categoriesResult.data ?? []);
-      } catch {
+      } catch (error) {
         if (isMounted) {
-          setReferenceError("기준 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
+          setReferenceError(
+            getUserFacingSupabaseMessage(
+              error,
+              "기준 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.",
+            ),
+          );
         }
       } finally {
         if (isMounted) {

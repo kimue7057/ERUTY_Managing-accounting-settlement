@@ -29,6 +29,8 @@ import type {
 import {
   formatSupabaseDate,
   getSingleRelation,
+  hasEvidenceAttachment,
+  mapDbEvidenceStatus,
   type DbEvidenceStatus,
   type DbExpenseStatus,
   type DbPaymentMethod,
@@ -58,6 +60,7 @@ const employeeTableColumns = [
 ];
 
 const detailTableColumns = [
+  { key: "requestNo", label: "요청번호" },
   { key: "usedDate", label: "사용일" },
   { key: "expenseType", label: "경비 유형" },
   { key: "merchantName", label: "사용처" },
@@ -89,6 +92,11 @@ type RequesterRelation = {
 };
 
 type CategoryRelation = {
+  id: string;
+  name: string;
+};
+
+type SettlementRecordEmployeeRelation = {
   id: string;
   name: string;
 };
@@ -150,10 +158,34 @@ type MonthlySettlementRecordRow = {
   id: string;
   settlement_month: string;
   employee_id: string;
+  total_requested_amount: number;
+  approved_amount: number;
+  rejected_amount: number;
+  pending_evidence_amount: number;
   final_payment_amount: number;
   status: SettlementRecordStatus;
   confirmed_at: string | null;
   paid_at: string | null;
+  employee: RelationValue<SettlementRecordEmployeeRelation>;
+};
+
+type SettlementItemExpenseRequestRelation = {
+  id: string;
+  request_no: string;
+  amount: number;
+  expense_date: string;
+  vendor: string;
+  evidence_status: DbEvidenceStatus;
+  category: RelationValue<CategoryRelation>;
+};
+
+type SettlementItemRow = {
+  id: string;
+  settlement_id: string;
+  expense_request_id: string;
+  amount: number;
+  status: SettlementItemStatus;
+  expense_request: RelationValue<SettlementItemExpenseRequestRelation>;
 };
 
 type ActionFeedback = {
@@ -203,36 +235,31 @@ function isSettlementPaymentMethod(paymentMethod: DbPaymentMethod) {
   return paymentMethod === "personal_card" || paymentMethod === "cash";
 }
 
-function mapAttachmentStatus(evidenceStatus: DbEvidenceStatus): AttachmentStatus {
-  return evidenceStatus === "attached" ? "첨부완료" : "미첨부";
-}
-
 function getExpenseSettlementItemStatus(row: SettlementExpenseRow): SettlementItemStatus {
   if (row.status === "rejected") {
     return "rejected";
   }
 
-  if (row.evidence_status === "none") {
+  if (!hasEvidenceAttachment(row.evidence_status)) {
     return "pending_evidence";
   }
 
   return "confirmed";
 }
 
+function getBaseSettlementStatus(itemStatus: SettlementItemStatus): MonthlySettlementStatus {
+  return itemStatus === "confirmed" ? "지급대기" : "보류";
+}
+
 function getExpenseSettlementStatus(row: SettlementExpenseRow): MonthlySettlementStatus {
-  if (row.status === "rejected") {
-    return "보류";
-  }
-
-  if (row.evidence_status === "none") {
-    return "보류";
-  }
-
-  return "지급대기";
+  return getBaseSettlementStatus(getExpenseSettlementItemStatus(row));
 }
 
 function getEmployeePayoutStatus(
-  employee: Pick<SettlementEmployee, "approvedAmount" | "missingProofAmount" | "finalPayoutAmount" | "rejectedAmount">,
+  employee: Pick<
+    SettlementEmployee,
+    "approvedAmount" | "missingProofAmount" | "finalPayoutAmount" | "rejectedAmount"
+  >,
 ): MonthlySettlementStatus {
   if (employee.missingProofAmount > 0) {
     return "보류";
@@ -249,19 +276,30 @@ function getEmployeePayoutStatus(
   return "정산대기";
 }
 
+function getSettlementRecordDisplayStatus(
+  status: SettlementRecordStatus | null | undefined,
+  fallback: MonthlySettlementStatus,
+): SettlementDisplayStatus {
+  if (status === "paid") {
+    return "지급완료";
+  }
+
+  if (status === "confirmed") {
+    return "정산완료";
+  }
+
+  if (status === "on_hold") {
+    return "보류";
+  }
+
+  return fallback;
+}
+
 function getDisplayedEmployeeStatus(
   employee: SettlementEmployee,
   settlementRecord: MonthlySettlementRecordRow | null | undefined,
 ): SettlementDisplayStatus {
-  if (settlementRecord?.status === "paid") {
-    return "지급완료";
-  }
-
-  if (settlementRecord?.status === "confirmed") {
-    return "정산완료";
-  }
-
-  return employee.payoutStatus;
+  return getSettlementRecordDisplayStatus(settlementRecord?.status, employee.payoutStatus);
 }
 
 function getDisplayedExpenseSettlementStatus(
@@ -280,33 +318,49 @@ function getDisplayedExpenseSettlementStatus(
     return "정산완료";
   }
 
+  if (settlementRecord.status === "on_hold") {
+    return "보류";
+  }
+
   return expense.settlementStatus;
 }
 
-function formatSupabaseDateTime(value: string | null | undefined) {
-  if (!value) {
-    return "-";
-  }
-
-  const parsedDate = new Date(value);
-
-  if (Number.isNaN(parsedDate.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("ko-KR", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(parsedDate);
+function formatSettlementDate(value: string | null | undefined) {
+  return formatSupabaseDate(value);
 }
 
 function getSettlementRecordMap(rows: MonthlySettlementRecordRow[]) {
   return rows.reduce<Record<string, MonthlySettlementRecordRow>>((result, row) => {
     result[row.employee_id] = row;
+    return result;
+  }, {});
+}
+
+function buildSettlementItemsMap(rows: SettlementItemRow[]) {
+  return rows.reduce<Record<string, SettlementEmployeeExpense[]>>((result, row) => {
+    const expenseRequest = getSingleRelation(row.expense_request);
+    const category = getSingleRelation(expenseRequest?.category ?? null);
+
+    const mappedExpense: SettlementEmployeeExpense = {
+      id: row.expense_request_id,
+      requestNo: expenseRequest?.request_no ?? "-",
+      usedDate: formatSupabaseDate(expenseRequest?.expense_date),
+      expenseType: category?.name ?? "기타",
+      merchantName: expenseRequest?.vendor ?? "-",
+      amount: expenseRequest?.amount ?? row.amount,
+      approvedAmount: row.status === "rejected" ? 0 : row.amount,
+      attachmentStatus: mapDbEvidenceStatus(expenseRequest?.evidence_status),
+      settlementStatus: getBaseSettlementStatus(row.status),
+      settlementItemStatus: row.status,
+    };
+
+    if (!result[row.settlement_id]) {
+      result[row.settlement_id] = [];
+    }
+
+    result[row.settlement_id].push(mappedExpense);
+    result[row.settlement_id].sort((left, right) => right.usedDate.localeCompare(left.usedDate));
+
     return result;
   }, {});
 }
@@ -338,7 +392,10 @@ function buildConfirmedSettlementRows(
     .map<ConfirmedSettlementRow>((row) => ({
       id: row.id,
       employeeId: row.employee_id,
-      employeeName: employeeNameById[row.employee_id] ?? "미확인 직원",
+      employeeName:
+        getSingleRelation(row.employee)?.name ??
+        employeeNameById[row.employee_id] ??
+        "미확인 직원",
       finalPaymentAmount: row.final_payment_amount,
       status: row.status,
       confirmedAt: row.confirmed_at,
@@ -351,9 +408,7 @@ function buildConfirmedSettlementRows(
     });
 }
 
-function buildSettlementEmployees(
-  rows: SettlementExpenseRow[],
-): SettlementEmployee[] {
+function buildLiveSettlementEmployees(rows: SettlementExpenseRow[]): SettlementEmployee[] {
   const employeeMap = new Map<string, SettlementEmployee>();
 
   rows.forEach((row) => {
@@ -384,29 +439,29 @@ function buildSettlementEmployees(
 
     employee.personalExpenseTotal += row.amount;
 
-    if (row.status === "approved" && row.evidence_status === "attached") {
-      employee.approvedAmount += row.amount;
-      employee.finalPayoutAmount += row.amount;
-    } else if (row.status === "approved" && row.evidence_status === "none") {
-      employee.missingProofAmount += row.amount;
+    const approvedAmount = row.amount;
+
+    if (row.status === "approved" && hasEvidenceAttachment(row.evidence_status)) {
+      employee.approvedAmount += approvedAmount;
+      employee.finalPayoutAmount += approvedAmount;
+    } else if (row.status === "approved" && !hasEvidenceAttachment(row.evidence_status)) {
+      employee.missingProofAmount += approvedAmount;
     } else if (row.status === "rejected") {
       employee.rejectedAmount += row.amount;
     }
 
-    const settlementExpense: SettlementEmployeeExpense = {
+    employee.expenses.push({
       id: row.id,
       requestNo: row.request_no,
       usedDate: formatSupabaseDate(row.expense_date),
       expenseType: category?.name ?? "기타",
       merchantName: row.vendor,
       amount: row.amount,
-      approvedAmount: row.status === "approved" ? row.amount : 0,
-      attachmentStatus: mapAttachmentStatus(row.evidence_status),
+      approvedAmount: row.status === "approved" ? approvedAmount : 0,
+      attachmentStatus: mapDbEvidenceStatus(row.evidence_status),
       settlementStatus: getExpenseSettlementStatus(row),
       settlementItemStatus: getExpenseSettlementItemStatus(row),
-    };
-
-    employee.expenses.push(settlementExpense);
+    });
   });
 
   return Array.from(employeeMap.values())
@@ -420,6 +475,66 @@ function buildSettlementEmployees(
     .sort((left, right) => right.finalPayoutAmount - left.finalPayoutAmount);
 }
 
+function createSettlementSnapshotEmployee(
+  settlementRecord: MonthlySettlementRecordRow,
+  expenses: SettlementEmployeeExpense[],
+): SettlementEmployee {
+  const employeeName =
+    getSingleRelation(settlementRecord.employee)?.name ?? "미확인 직원";
+
+  return {
+    id: settlementRecord.employee_id,
+    employeeName,
+    personalExpenseTotal: settlementRecord.total_requested_amount,
+    approvedAmount: settlementRecord.approved_amount,
+    rejectedAmount: settlementRecord.rejected_amount,
+    missingProofAmount: settlementRecord.pending_evidence_amount,
+    finalPayoutAmount: settlementRecord.final_payment_amount,
+    payoutStatus: getEmployeePayoutStatus({
+      approvedAmount: settlementRecord.approved_amount,
+      missingProofAmount: settlementRecord.pending_evidence_amount,
+      finalPayoutAmount: settlementRecord.final_payment_amount,
+      rejectedAmount: settlementRecord.rejected_amount,
+    }),
+    expenses,
+  };
+}
+
+function mergeEmployeesWithSettlementRecords(
+  employees: SettlementEmployee[],
+  settlementRows: MonthlySettlementRecordRow[],
+  settlementItemsBySettlementId: Record<string, SettlementEmployeeExpense[]>,
+) {
+  const employeeMap = new Map<string, SettlementEmployee>();
+
+  employees.forEach((employee) => {
+    employeeMap.set(employee.id, employee);
+  });
+
+  settlementRows.forEach((settlementRecord) => {
+    const currentEmployee = employeeMap.get(settlementRecord.employee_id);
+    const snapshotExpenses =
+      settlementItemsBySettlementId[settlementRecord.id] ?? currentEmployee?.expenses ?? [];
+    const snapshotEmployee = createSettlementSnapshotEmployee(
+      settlementRecord,
+      snapshotExpenses,
+    );
+
+    employeeMap.set(settlementRecord.employee_id, {
+      ...(currentEmployee ?? snapshotEmployee),
+      ...snapshotEmployee,
+    });
+  });
+
+  return Array.from(employeeMap.values()).sort((left, right) => {
+    if (right.finalPayoutAmount !== left.finalPayoutAmount) {
+      return right.finalPayoutAmount - left.finalPayoutAmount;
+    }
+
+    return left.employeeName.localeCompare(right.employeeName, "ko");
+  });
+}
+
 function buildSummary(
   employees: SettlementEmployee[],
   settlementRows: MonthlySettlementRecordRow[],
@@ -428,22 +543,22 @@ function buildSummary(
     .filter((row) => row.status === "paid")
     .reduce((total, row) => total + row.final_payment_amount, 0);
 
-  return employees.reduce<MonthlySettlementSummaryValues>(
-    (summary, employee) => ({
-      employeeCount: summary.employeeCount + 1,
-      totalPlannedAmount: summary.totalPlannedAmount + employee.finalPayoutAmount,
-      paidAmount,
-      holdAmount: summary.holdAmount + employee.missingProofAmount,
-      rejectedAmount: summary.rejectedAmount + employee.rejectedAmount,
-    }),
-    {
-      employeeCount: 0,
-      totalPlannedAmount: 0,
-      paidAmount,
-      holdAmount: 0,
-      rejectedAmount: 0,
-    },
-  );
+  return {
+    employeeCount: employees.length,
+    totalPlannedAmount: employees.reduce(
+      (total, employee) => total + employee.finalPayoutAmount,
+      0,
+    ),
+    paidAmount,
+    holdAmount: employees.reduce(
+      (total, employee) => total + employee.missingProofAmount,
+      0,
+    ),
+    rejectedAmount: employees.reduce(
+      (total, employee) => total + employee.rejectedAmount,
+      0,
+    ),
+  };
 }
 
 export default function MonthlySettlementPage() {
@@ -457,13 +572,9 @@ export default function MonthlySettlementPage() {
   const [settlementRecords, setSettlementRecords] = useState<
     Record<string, MonthlySettlementRecordRow>
   >({});
-  const [summary, setSummary] = useState<MonthlySettlementSummaryValues>({
-    employeeCount: 0,
-    totalPlannedAmount: 0,
-    paidAmount: 0,
-    holdAmount: 0,
-    rejectedAmount: 0,
-  });
+  const [settlementItemsBySettlementId, setSettlementItemsBySettlementId] = useState<
+    Record<string, SettlementEmployeeExpense[]>
+  >({});
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [schemaNotice, setSchemaNotice] = useState<string | null>(null);
@@ -491,13 +602,7 @@ export default function MonthlySettlementPage() {
         );
         setEmployees([]);
         setSettlementRecords({});
-        setSummary({
-          employeeCount: 0,
-          totalPlannedAmount: 0,
-          paidAmount: 0,
-          holdAmount: 0,
-          rejectedAmount: 0,
-        });
+        setSettlementItemsBySettlementId({});
         setIsLoading(false);
         return;
       }
@@ -543,12 +648,13 @@ export default function MonthlySettlementPage() {
           return;
         }
 
-        const settlementRows = ((data ?? []) as SettlementExpenseRow[]).filter((row) =>
+        const liveRows = ((data ?? []) as SettlementExpenseRow[]).filter((row) =>
           isSettlementPaymentMethod(row.payment_method),
         );
+        const nextEmployees = buildLiveSettlementEmployees(liveRows);
 
-        const nextEmployees = buildSettlementEmployees(settlementRows);
-        let nextSettlementRows: MonthlySettlementRecordRow[] = [];
+        let settlementRowList: MonthlySettlementRecordRow[] = [];
+        let settlementItemsMap: Record<string, SettlementEmployeeExpense[]> = {};
 
         const { data: settlementData, error: settlementError } = await supabase
           .from("monthly_settlements")
@@ -557,10 +663,18 @@ export default function MonthlySettlementPage() {
               id,
               settlement_month,
               employee_id,
+              total_requested_amount,
+              approved_amount,
+              rejected_amount,
+              pending_evidence_amount,
               final_payment_amount,
               status,
               confirmed_at,
-              paid_at
+              paid_at,
+              employee:profiles!monthly_settlements_employee_id_fkey (
+                id,
+                name
+              )
             `,
           )
           .eq("settlement_month", selectedMonth)
@@ -568,21 +682,61 @@ export default function MonthlySettlementPage() {
 
         if (settlementError) {
           if (isSettlementSchemaMissing(settlementError)) {
-            if (isMounted) {
-              setSchemaNotice(
-                "월말 정산 확정용 테이블이 아직 없습니다. Supabase SQL Editor에서 supabase/monthly_settlements.sql을 먼저 실행해주세요.",
-              );
-            }
+            setSchemaNotice(
+              "월말 정산 확정용 테이블이 아직 없습니다. Supabase SQL Editor에서 supabase/monthly_settlements.sql을 먼저 실행해주세요.",
+            );
           } else {
             throw settlementError;
           }
         } else {
-          nextSettlementRows = (settlementData ?? []) as MonthlySettlementRecordRow[];
+          settlementRowList = (settlementData ?? []) as MonthlySettlementRecordRow[];
+
+          if (settlementRowList.length > 0) {
+            const settlementIds = settlementRowList.map((row) => row.id);
+            const { data: settlementItemsData, error: settlementItemsError } = await supabase
+              .from("settlement_items")
+              .select(
+                `
+                  id,
+                  settlement_id,
+                  expense_request_id,
+                  amount,
+                  status,
+                  expense_request:expense_requests!settlement_items_expense_request_id_fkey (
+                    id,
+                    request_no,
+                    amount,
+                    expense_date,
+                    vendor,
+                    evidence_status,
+                    category:expense_categories!expense_requests_category_id_fkey (
+                      id,
+                      name
+                    )
+                  )
+                `,
+              )
+              .in("settlement_id", settlementIds);
+
+            if (settlementItemsError) {
+              if (isSettlementSchemaMissing(settlementItemsError)) {
+                setSchemaNotice(
+                  "월말 정산 상세 항목 테이블이 아직 없습니다. Supabase SQL Editor에서 supabase/monthly_settlements.sql을 먼저 실행해주세요.",
+                );
+              } else {
+                throw settlementItemsError;
+              }
+            } else {
+              settlementItemsMap = buildSettlementItemsMap(
+                (settlementItemsData ?? []) as SettlementItemRow[],
+              );
+            }
+          }
         }
 
         setEmployees(nextEmployees);
-        setSettlementRecords(getSettlementRecordMap(nextSettlementRows));
-        setSummary(buildSummary(nextEmployees, nextSettlementRows));
+        setSettlementRecords(getSettlementRecordMap(settlementRowList));
+        setSettlementItemsBySettlementId(settlementItemsMap);
       } catch (error) {
         const message = getUserFacingSupabaseMessage(
           error,
@@ -596,13 +750,7 @@ export default function MonthlySettlementPage() {
         setLoadError(message);
         setEmployees([]);
         setSettlementRecords({});
-        setSummary({
-          employeeCount: 0,
-          totalPlannedAmount: 0,
-          paidAmount: 0,
-          holdAmount: 0,
-          rejectedAmount: 0,
-        });
+        setSettlementItemsBySettlementId({});
       } finally {
         if (isMounted) {
           setIsLoading(false);
@@ -620,13 +768,33 @@ export default function MonthlySettlementPage() {
   const selectedMonthLabel =
     monthOptions.find((option) => option.value === selectedMonth)?.label ?? selectedMonth;
 
+  const settlementRecordList = useMemo(
+    () => Object.values(settlementRecords),
+    [settlementRecords],
+  );
+
+  const displayEmployees = useMemo(
+    () =>
+      mergeEmployeesWithSettlementRecords(
+        employees,
+        settlementRecordList,
+        settlementItemsBySettlementId,
+      ),
+    [employees, settlementItemsBySettlementId, settlementRecordList],
+  );
+
+  const summary = useMemo(
+    () => buildSummary(displayEmployees, settlementRecordList),
+    [displayEmployees, settlementRecordList],
+  );
+
   const employeeOptions = useMemo(
-    () => ["전체", ...employees.map((employee) => employee.employeeName)],
-    [employees],
+    () => ["전체", ...displayEmployees.map((employee) => employee.employeeName)],
+    [displayEmployees],
   );
 
   const filteredEmployees = useMemo(() => {
-    return employees.filter((employee) => {
+    return displayEmployees.filter((employee) => {
       const matchesEmployee =
         employeeFilter === "전체" || employee.employeeName === employeeFilter;
       const displayStatus = getDisplayedEmployeeStatus(
@@ -637,11 +805,11 @@ export default function MonthlySettlementPage() {
 
       return matchesEmployee && matchesStatus;
     });
-  }, [employeeFilter, employees, settlementRecords, statusFilter]);
+  }, [displayEmployees, employeeFilter, settlementRecords, statusFilter]);
 
   const selectedEmployee = useMemo(
-    () => employees.find((employee) => employee.id === selectedEmployeeId) ?? null,
-    [employees, selectedEmployeeId],
+    () => displayEmployees.find((employee) => employee.id === selectedEmployeeId) ?? null,
+    [displayEmployees, selectedEmployeeId],
   );
 
   const selectedSettlementRecord = useMemo(() => {
@@ -653,8 +821,8 @@ export default function MonthlySettlementPage() {
   }, [selectedEmployee, settlementRecords]);
 
   const confirmedSettlementRows = useMemo(
-    () => buildConfirmedSettlementRows(Object.values(settlementRecords), employees),
-    [employees, settlementRecords],
+    () => buildConfirmedSettlementRows(settlementRecordList, displayEmployees),
+    [displayEmployees, settlementRecordList],
   );
 
   async function handleConfirmSettlement() {
@@ -684,7 +852,7 @@ export default function MonthlySettlementPage() {
     if (selectedEmployee.expenses.length === 0) {
       setActionFeedback({
         type: "error",
-        message: "정산 확정할 대상 경비가 없습니다.",
+        message: "정산 확정 대상 지출 요청이 없습니다.",
       });
       return;
     }
@@ -692,7 +860,7 @@ export default function MonthlySettlementPage() {
     if (selectedSettlementRecord) {
       setActionFeedback({
         type: "error",
-        message: "이미 정산 확정이 완료된 직원입니다. 같은 월에 중복 확정할 수 없습니다.",
+        message: "이미 정산이 확정된 직원입니다. 같은 월에는 중복 확정할 수 없습니다.",
       });
       return;
     }
@@ -709,10 +877,18 @@ export default function MonthlySettlementPage() {
             id,
             settlement_month,
             employee_id,
+            total_requested_amount,
+            approved_amount,
+            rejected_amount,
+            pending_evidence_amount,
             final_payment_amount,
             status,
             confirmed_at,
-            paid_at
+            paid_at,
+            employee:profiles!monthly_settlements_employee_id_fkey (
+              id,
+              name
+            )
           `,
         )
         .eq("settlement_month", selectedMonth)
@@ -732,7 +908,7 @@ export default function MonthlySettlementPage() {
         }));
         setActionFeedback({
           type: "error",
-          message: "이미 정산 확정이 완료된 직원입니다. 같은 월에 중복 확정할 수 없습니다.",
+          message: "이미 정산이 확정된 직원입니다. 같은 월에는 중복 확정할 수 없습니다.",
         });
         return;
       }
@@ -756,10 +932,18 @@ export default function MonthlySettlementPage() {
             id,
             settlement_month,
             employee_id,
+            total_requested_amount,
+            approved_amount,
+            rejected_amount,
+            pending_evidence_amount,
             final_payment_amount,
             status,
             confirmed_at,
-            paid_at
+            paid_at,
+            employee:profiles!monthly_settlements_employee_id_fkey (
+              id,
+              name
+            )
           `,
         )
         .single();
@@ -772,7 +956,7 @@ export default function MonthlySettlementPage() {
       const settlementItemsPayload = selectedEmployee.expenses.map((expense) => ({
         settlement_id: savedSettlement.id,
         expense_request_id: expense.id,
-        amount: expense.amount,
+        amount: expense.approvedAmount > 0 ? expense.approvedAmount : expense.amount,
         status: expense.settlementItemStatus,
       }));
 
@@ -787,16 +971,17 @@ export default function MonthlySettlementPage() {
         }
       }
 
-      const nextSettlementRows = [...Object.values(settlementRecords), savedSettlement];
-
       setSettlementRecords((current) => ({
         ...current,
         [selectedEmployee.id]: savedSettlement,
       }));
-      setSummary(buildSummary(employees, nextSettlementRows));
+      setSettlementItemsBySettlementId((current) => ({
+        ...current,
+        [savedSettlement.id]: [...selectedEmployee.expenses],
+      }));
       setActionFeedback({
         type: "success",
-        message: `${selectedEmployee.employeeName}님의 ${selectedMonthLabel} 정산이 확정되었습니다.`,
+        message: `${selectedEmployee.employeeName}님의 ${selectedMonthLabel} 정산을 확정했습니다.`,
       });
     } catch (error) {
       setActionFeedback({
@@ -862,10 +1047,18 @@ export default function MonthlySettlementPage() {
             id,
             settlement_month,
             employee_id,
+            total_requested_amount,
+            approved_amount,
+            rejected_amount,
+            pending_evidence_amount,
             final_payment_amount,
             status,
             confirmed_at,
-            paid_at
+            paid_at,
+            employee:profiles!monthly_settlements_employee_id_fkey (
+              id,
+              name
+            )
           `,
         )
         .single();
@@ -875,15 +1068,14 @@ export default function MonthlySettlementPage() {
       }
 
       const updatedRecord = data as MonthlySettlementRecordRow;
-      const nextSettlementRows = Object.values(settlementRecords).map((record) =>
-        record.id === updatedRecord.id ? updatedRecord : record,
-      );
 
-      setSettlementRecords(getSettlementRecordMap(nextSettlementRows));
-      setSummary(buildSummary(employees, nextSettlementRows));
+      setSettlementRecords((current) => ({
+        ...current,
+        [updatedRecord.employee_id]: updatedRecord,
+      }));
       setActionFeedback({
         type: "success",
-        message: `${payoutTarget.employeeName}님의 정산이 지급 완료 처리되었습니다.`,
+        message: `${payoutTarget.employeeName}님의 정산을 지급 완료 처리했습니다.`,
       });
       setPayoutTarget(null);
     } catch (error) {
@@ -904,14 +1096,14 @@ export default function MonthlySettlementPage() {
       id: "employee-count",
       title: "정산 대상 직원 수",
       value: isLoading ? null : <span>{summary.employeeCount}명</span>,
-      description: "해당 월에 개인 선지출 정산 대상이 있는 직원 수입니다.",
+      description: "해당 월에 개인 선지출 정산 이력이 있는 직원 수입니다.",
       icon: <Users className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "total-planned",
       title: "총 정산 예정액",
       value: isLoading ? null : <AmountText value={summary.totalPlannedAmount} />,
-      description: "증빙이 갖춰진 승인완료 개인카드/현금 사용 건 기준 지급 예정 금액입니다.",
+      description: "증빙이 갖춰진 승인 완료 개인카드/현금 사용 건 기준 지급 예정 금액입니다.",
       icon: <WalletCards className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
@@ -925,7 +1117,7 @@ export default function MonthlySettlementPage() {
       id: "hold-amount",
       title: "보류 금액",
       value: isLoading ? null : <AmountText value={summary.holdAmount} />,
-      description: "증빙이 미첨부된 승인완료 개인 선지출 금액입니다.",
+      description: "증빙이 미첨부된 승인 완료 개인 선지출 금액입니다.",
       icon: <PauseCircle className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
@@ -941,7 +1133,7 @@ export default function MonthlySettlementPage() {
     <div className="space-y-8">
       <PageHeader
         title="월말 정산"
-        description="승인완료된 개인카드/현금 경비를 직원별로 집계해 월말 정산 예정 금액을 확인합니다."
+        description="승인 완료된 개인카드/현금 경비를 직원별로 집계해 월말 정산 예정 금액을 확인합니다."
         roles={roleViews}
         activeRole="관리자 보기"
         eyebrow="정산 지급 관리"
@@ -985,13 +1177,14 @@ export default function MonthlySettlementPage() {
           <div>
             <h3 className="text-lg font-semibold text-slate-950">정산 대상 포함 기준</h3>
             <p className="mt-1 text-sm text-slate-500">
-              승인완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함하고, 증빙이 없는 건은 보류 금액으로 분류합니다. 법인카드 사용 건은 직원 지급 대상에서 제외합니다.
+              승인 완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함하고, 증빙이 없는 건은 보류 금액으로
+              분리합니다. 법인카드 사용 건은 직원 지급 대상에서 제외합니다.
             </p>
           </div>
 
           <div className="grid gap-2 sm:grid-cols-3">
             <div className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm">
-              승인완료
+              승인 완료
             </div>
             <div className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm">
               개인카드/현금 사용
@@ -1090,7 +1283,7 @@ export default function MonthlySettlementPage() {
             title={card.title}
             description={card.description}
             value={
-              card.value ?? <span className="text-base font-medium text-slate-400">불러오는 중...</span>
+              card.value ?? <span className="text-base font-medium text-slate-400">불러오는 중..</span>
             }
             icon={card.icon}
           />
@@ -1160,20 +1353,21 @@ export default function MonthlySettlementPage() {
 
         {isLoading ? (
           <EmptyState
-            title="월말 정산 대상을 불러오는 중입니다."
-            description="선택한 월의 approved/rejected 개인 선지출 내역을 직원별로 집계하고 있습니다."
+            title="직원별 정산 대상 내역을 불러오는 중입니다."
+            description="선택한 월의 expense_requests와 monthly_settlements를 함께 조회하고 있습니다."
           />
         ) : null}
 
         {!isLoading && filteredEmployees.length === 0 ? (
           <EmptyState
-            title="조건에 맞는 정산 대상 직원이 없습니다."
+            title="조건에 맞는 정산 대상이 없습니다."
             description="정산 월, 직원, 상태 필터를 조정해서 다른 정산 내역을 확인해보세요."
           />
         ) : null}
 
         <div className="mt-5 rounded-2xl border border-sky-100 bg-sky-50 px-4 py-4 text-sm leading-6 text-sky-800">
-          승인완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함됩니다. 증빙이 미첨부된 건은 보류 금액으로 분류되며, 법인카드 사용 건은 직원 지급 대상이 아닙니다.
+          승인 완료된 개인카드/현금 사용 건만 월말 정산 대상에 포함됩니다. 증빙이 미첨부된 건은 보류 금액으로
+          분류되며, 법인카드 사용 건은 직원 지급 대상이 아닙니다.
         </div>
       </section>
 
@@ -1182,7 +1376,7 @@ export default function MonthlySettlementPage() {
           <div>
             <h3 className="text-lg font-semibold text-slate-950">확정된 정산 목록</h3>
             <p className="mt-1 text-sm text-slate-500">
-              선택한 월에 확정된 정산 내역을 확인하고, confirmed 상태 항목만 지급 완료 처리할 수 있습니다.
+              선택한 월의 정산 확정/지급 완료 상태를 확인하고, confirmed 상태만 지급 완료 처리할 수 있습니다.
             </p>
           </div>
           <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
@@ -1198,13 +1392,15 @@ export default function MonthlySettlementPage() {
                 <AmountText value={row.finalPaymentAmount} />
               </td>
               <td className="px-4 py-4 text-center">
-                <StatusBadge status={row.status === "paid" ? "지급완료" : "정산완료"} />
+                <StatusBadge
+                  status={getSettlementRecordDisplayStatus(row.status, "정산대기")}
+                />
               </td>
               <td className="px-4 py-4 text-center text-slate-500">
-                {formatSupabaseDateTime(row.confirmedAt)}
+                {formatSettlementDate(row.confirmedAt)}
               </td>
               <td className="px-4 py-4 text-center text-slate-500">
-                {row.paidAt ? formatSupabaseDateTime(row.paidAt) : "-"}
+                {row.paidAt ? formatSettlementDate(row.paidAt) : "-"}
               </td>
               <td className="px-4 py-4 text-center">
                 <button
@@ -1242,7 +1438,7 @@ export default function MonthlySettlementPage() {
 
       {selectedEmployee ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-8">
-          <div className="w-full max-w-5xl rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-2xl">
+          <div className="w-full max-w-6xl rounded-[1.75rem] border border-slate-200 bg-white p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-sm font-medium text-slate-500">{selectedMonthLabel} 정산 상세</p>
@@ -1255,7 +1451,9 @@ export default function MonthlySettlementPage() {
                   />
                 </div>
                 <p className="mt-2 text-sm text-slate-500">
-                  승인완료된 개인카드/현금 사용 건 중 월말 정산 대상 경비를 확인합니다.
+                  {selectedSettlementRecord
+                    ? "확정된 정산 스냅샷 기준으로 포함된 지출 요청 목록을 표시합니다."
+                    : "실시간 expense_requests 기준으로 월말 정산 대상 지출 요청을 표시합니다."}
                 </p>
               </div>
               <button
@@ -1270,17 +1468,15 @@ export default function MonthlySettlementPage() {
 
             {selectedSettlementRecord ? (
               <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm leading-6 text-emerald-800">
-                <p className="font-semibold">이미 정산 확정이 완료된 내역입니다.</p>
-                <p className="mt-1">
-                  확정 시각: {formatSupabaseDateTime(selectedSettlementRecord.confirmed_at)}
-                </p>
+                <p className="font-semibold">이미 정산이 확정된 내역입니다.</p>
+                <p className="mt-1">확정일: {formatSettlementDate(selectedSettlementRecord.confirmed_at)}</p>
                 {selectedSettlementRecord.paid_at ? (
                   <p className="mt-1">
-                    지급 완료일: {formatSupabaseDateTime(selectedSettlementRecord.paid_at)}
+                    지급 완료일: {formatSettlementDate(selectedSettlementRecord.paid_at)}
                   </p>
                 ) : null}
                 <p className="mt-1">
-                  같은 월의 같은 직원 정산은 중복 확정할 수 없습니다.
+                  지급 완료된 정산은 다시 수정하지 못하며, 같은 월에는 중복 확정도 허용되지 않습니다.
                 </p>
               </div>
             ) : null}
@@ -1338,6 +1534,7 @@ export default function MonthlySettlementPage() {
                       expense.attachmentStatus === "미첨부" ? "bg-amber-50/35" : "",
                     ].join(" ")}
                   >
+                    <td className="px-4 py-4 text-slate-600">{expense.requestNo}</td>
                     <td className="px-4 py-4 text-slate-500">
                       <time dateTime={expense.usedDate}>{expense.usedDate}</time>
                     </td>
@@ -1367,7 +1564,7 @@ export default function MonthlySettlementPage() {
               {selectedEmployee.expenses.length === 0 ? (
                 <EmptyState
                   title="표시할 정산 상세 내역이 없습니다."
-                  description="선택한 직원의 월말 정산 대상 경비가 없습니다."
+                  description="선택한 직원의 월말 정산 포함 지출 요청이 없습니다."
                 />
               ) : null}
             </div>
@@ -1415,7 +1612,7 @@ export default function MonthlySettlementPage() {
                 {selectedSettlementRecord
                   ? "정산 확정 완료"
                   : isConfirming
-                    ? "정산 확정 중..."
+                    ? "정산 확정 중.."
                     : "정산 확정"}
               </button>
               <button
@@ -1449,7 +1646,9 @@ export default function MonthlySettlementPage() {
               </button>
               <button
                 type="button"
-                onClick={() => window.alert("엑셀 다운로드 기능은 추후 연동 예정입니다.")}
+                onClick={() =>
+                  window.alert("엑셀 다운로드 기능은 추후 연동 예정입니다.")
+                }
                 className="inline-flex items-center justify-center rounded-2xl bg-[var(--primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:opacity-95"
               >
                 엑셀 다운로드
@@ -1504,7 +1703,7 @@ export default function MonthlySettlementPage() {
                   정산 확정일
                 </p>
                 <p className="mt-2 text-sm text-slate-600">
-                  {formatSupabaseDateTime(payoutTarget.confirmedAt)}
+                  {formatSettlementDate(payoutTarget.confirmedAt)}
                 </p>
               </div>
               <div>
@@ -1513,7 +1712,7 @@ export default function MonthlySettlementPage() {
                 </p>
                 <div className="mt-2">
                   <StatusBadge
-                    status={payoutTarget.status === "paid" ? "지급완료" : "정산완료"}
+                    status={getSettlementRecordDisplayStatus(payoutTarget.status, "정산대기")}
                   />
                 </div>
               </div>
@@ -1540,7 +1739,7 @@ export default function MonthlySettlementPage() {
                     : "border border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100",
                 ].join(" ")}
               >
-                {isMarkingPaid ? "지급 완료 처리 중..." : "지급 완료 처리"}
+                {isMarkingPaid ? "지급 완료 처리 중.." : "지급 완료 처리"}
               </button>
             </div>
           </div>
@@ -1551,7 +1750,11 @@ export default function MonthlySettlementPage() {
         <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-sm leading-6 text-slate-600">
           <SearchCheck className="mt-0.5 h-5 w-5 shrink-0 text-[var(--primary)]" strokeWidth={1.9} />
           <p>
-            현재 화면은 `expense_requests` 실데이터를 기준으로 월말 정산을 집계하고, `monthly_settlements` 및 `settlement_items`에 정산 확정 결과를 저장합니다. 지급 완료 처리는 수동 상태 업데이트 방식으로만 연결되어 있으며, 실제 계좌이체 기능은 포함하지 않습니다.
+            현재 화면은 <code className="mx-1 rounded bg-white px-1.5 py-0.5 text-xs">expense_requests</code>
+            실데이터를 기준으로 월말 정산을 계산하고, <code className="mx-1 rounded bg-white px-1.5 py-0.5 text-xs">monthly_settlements</code>
+            와 <code className="mx-1 rounded bg-white px-1.5 py-0.5 text-xs">settlement_items</code>
+            에 정산 확정 결과를 저장합니다. 지급 완료 처리는 수동 상태 업데이트 방식으로만 연결되어 있으며,
+            실제 계좌이체 기능은 포함하지 않습니다.
           </p>
         </div>
       </section>

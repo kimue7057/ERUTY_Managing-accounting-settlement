@@ -20,9 +20,10 @@ export type DbExpenseStatus =
   | "revision_requested"
   | "settlement_pending"
   | "settled"
-  | "on_hold";
+  | "on_hold"
+  | "paid";
 
-export type DbEvidenceStatus = "none" | "attached";
+export type DbEvidenceStatus = "none" | "attached" | "verified";
 
 export type DbAttachmentFileType =
   | "receipt"
@@ -104,6 +105,8 @@ export function mapDbExpenseStatus(value: DbExpenseStatus | null | undefined): E
       return "정산완료";
     case "on_hold":
       return "보류";
+    case "paid":
+      return "지급완료";
     case "draft":
     case "submitted":
     default:
@@ -116,6 +119,7 @@ export function mapDbExpenseStatusToApproval(
 ): ApprovalDisplayStatus {
   switch (value) {
     case "approved":
+    case "paid":
       return "승인완료";
     case "rejected":
       return "반려";
@@ -131,7 +135,28 @@ export function mapDbExpenseStatusToApproval(
 export function mapDbEvidenceStatus(
   value: DbEvidenceStatus | null | undefined,
 ): AttachmentStatus {
-  return value === "attached" ? "첨부완료" : "미첨부";
+  switch (value) {
+    case "verified":
+      return "확인완료";
+    case "attached":
+      return "첨부완료";
+    case "none":
+    default:
+      return "미첨부";
+  }
+}
+
+export function hasEvidenceAttachment(value: DbEvidenceStatus | null | undefined) {
+  return value === "attached" || value === "verified";
+}
+
+export function isApprovedExpenseStatus(value: DbExpenseStatus | null | undefined) {
+  return (
+    value === "approved" ||
+    value === "settlement_pending" ||
+    value === "settled" ||
+    value === "paid"
+  );
 }
 
 export function mapSettlementRequested(

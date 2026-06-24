@@ -25,11 +25,16 @@ import {
   getSupabaseBrowserClient,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
-import { formatSupabaseDate, getSingleRelation, type DbExpenseStatus } from "@/utils/expenseRequests";
+import {
+  formatSupabaseDate,
+  getSingleRelation,
+  type DbExpenseStatus,
+  type DbPaymentMethod,
+} from "@/utils/expenseRequests";
 import {
   calculateFundOverview,
-  getFundTransactionDelta,
   isFundSchemaMissing,
+  isSettlementSchemaMissing,
   mapFundStatusLabel,
   mapFundTransactionTypeLabel,
   mapFundTypeLabel,
@@ -60,12 +65,8 @@ type ApprovedExpenseRow = {
   id: string;
   amount: number;
   status: DbExpenseStatus;
-};
-
-type MonthlySettlementRow = {
-  id: string;
-  final_payment_amount: number;
-  status: SettlementRecordStatus;
+  settlement_requested: boolean;
+  payment_method: DbPaymentMethod;
 };
 
 type SettlementStatusRelation = {
@@ -240,7 +241,6 @@ export default function FundsPage() {
   const [funds, setFunds] = useState<CompanyFundRow[]>([]);
   const [transactions, setTransactions] = useState<FundTransactionRow[]>([]);
   const [approvedExpenses, setApprovedExpenses] = useState<ApprovedExpenseRow[]>([]);
-  const [monthlySettlements, setMonthlySettlements] = useState<MonthlySettlementRow[]>([]);
   const [settlementItems, setSettlementItems] = useState<SettlementItemRow[]>([]);
   const [expenseRequestOptions, setExpenseRequestOptions] = useState<ExpenseRequestOption[]>([]);
   const [selectedFundFilter, setSelectedFundFilter] = useState("전체");
@@ -285,7 +285,6 @@ export default function FundsPage() {
         setFunds([]);
         setTransactions([]);
         setApprovedExpenses([]);
-        setMonthlySettlements([]);
         setSettlementItems([]);
         setExpenseRequestOptions([]);
         setIsLoading(false);
@@ -299,7 +298,6 @@ export default function FundsPage() {
           fundsResult,
           transactionsResult,
           approvedExpensesResult,
-          monthlySettlementsResult,
           settlementItemsResult,
           expenseRequestOptionsResult,
         ] = await Promise.all([
@@ -348,12 +346,8 @@ export default function FundsPage() {
             .order("created_at", { ascending: false }),
           supabase
             .from("expense_requests")
-            .select("id, amount, status")
+            .select("id, amount, status, settlement_requested, payment_method")
             .eq("status", "approved"),
-          supabase
-            .from("monthly_settlements")
-            .select("id, final_payment_amount, status")
-            .in("status", ["confirmed", "paid"]),
           supabase
             .from("settlement_items")
             .select(
@@ -396,11 +390,12 @@ export default function FundsPage() {
           throw approvedExpensesResult.error;
         }
 
-        if (monthlySettlementsResult.error) {
-          throw monthlySettlementsResult.error;
-        }
+        const settlementSchemaError =
+          settlementItemsResult.error && isSettlementSchemaMissing(settlementItemsResult.error)
+            ? settlementItemsResult.error
+            : null;
 
-        if (settlementItemsResult.error) {
+        if (settlementItemsResult.error && !settlementSchemaError) {
           throw settlementItemsResult.error;
         }
 
@@ -415,8 +410,9 @@ export default function FundsPage() {
         setFunds((fundsResult.data ?? []) as CompanyFundRow[]);
         setTransactions((transactionsResult.data ?? []) as FundTransactionRow[]);
         setApprovedExpenses((approvedExpensesResult.data ?? []) as ApprovedExpenseRow[]);
-        setMonthlySettlements((monthlySettlementsResult.data ?? []) as MonthlySettlementRow[]);
-        setSettlementItems((settlementItemsResult.data ?? []) as SettlementItemRow[]);
+        setSettlementItems(
+          settlementSchemaError ? [] : ((settlementItemsResult.data ?? []) as SettlementItemRow[]),
+        );
         setExpenseRequestOptions(
           (expenseRequestOptionsResult.data ?? []) as ExpenseRequestOption[],
         );
@@ -432,7 +428,6 @@ export default function FundsPage() {
           setFunds([]);
           setTransactions([]);
           setApprovedExpenses([]);
-          setMonthlySettlements([]);
           setSettlementItems([]);
           setExpenseRequestOptions([]);
         } else {
@@ -445,7 +440,6 @@ export default function FundsPage() {
           setFunds([]);
           setTransactions([]);
           setApprovedExpenses([]);
-          setMonthlySettlements([]);
           setSettlementItems([]);
           setExpenseRequestOptions([]);
         }
@@ -494,17 +488,12 @@ export default function FundsPage() {
   }, [settlementItems, transactions]);
 
   const fundOverview = useMemo(() => {
-    const settlementPendingAmount = monthlySettlements
-      .filter((settlement) => settlement.status === "confirmed")
-      .reduce((sum, settlement) => sum + settlement.final_payment_amount, 0);
-
     return calculateFundOverview({
       funds,
       approvedExpenses,
       handledExpenseRequestIds,
-      settlementPendingAmount,
     });
-  }, [approvedExpenses, funds, handledExpenseRequestIds, monthlySettlements]);
+  }, [approvedExpenses, funds, handledExpenseRequestIds]);
 
   const fundOptions = useMemo(
     () => [
@@ -593,14 +582,14 @@ export default function FundsPage() {
     {
       id: "approved-unpaid",
       title: "승인 지출 예정액",
-      description: "approved 상태이지만 아직 출금 또는 정산 처리되지 않은 금액입니다.",
+      description: "approved 상태 일반 지출 중 아직 출금 처리되지 않은 금액입니다.",
       value: isLoading ? null : <AmountText value={fundOverview.approvedExpensePendingAmount} />,
       icon: <BadgeCheck className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "settlement-due",
       title: "직원 정산 예정액",
-      description: "monthly_settlements.status = confirmed 기준 지급 대기 금액입니다.",
+      description: "approved + 정산 요청 + 개인카드/현금 기준 지급 예정 금액입니다.",
       value: isLoading ? null : <AmountText value={fundOverview.settlementPendingAmount} />,
       icon: <CreditCard className="h-5 w-5" strokeWidth={1.8} />,
     },
@@ -817,47 +806,22 @@ export default function FundsPage() {
 
     try {
       const supabase = getSupabaseBrowserClient();
-      const transactionAmount = getFundTransactionDelta({
-        transactionType: transactionForm.transactionType,
-        amount: rawAmount,
-        adjustmentDirection: transactionForm.adjustmentDirection,
+      const { error: transactionError } = await supabase.rpc("create_fund_transaction", {
+        p_fund_id: selectedFund.id,
+        p_transaction_type: transactionForm.transactionType,
+        p_amount: Math.trunc(rawAmount),
+        p_title: transactionForm.title.trim(),
+        p_description: transactionForm.description.trim(),
+        p_transaction_date: transactionForm.transactionDate,
+        p_related_expense_request_id:
+          transactionForm.relatedExpenseRequestId.trim().length > 0
+            ? transactionForm.relatedExpenseRequestId
+            : null,
+        p_adjustment_direction: transactionForm.adjustmentDirection,
       });
-      const nextBalance = selectedFund.current_balance + transactionAmount;
-
-      const { data: insertedTransaction, error: transactionError } = await supabase
-        .from("fund_transactions")
-        .insert({
-          fund_id: selectedFund.id,
-          transaction_type: transactionForm.transactionType,
-          amount: transactionAmount,
-          title: transactionForm.title.trim(),
-          description: transactionForm.description.trim(),
-          transaction_date: transactionForm.transactionDate,
-          related_expense_request_id:
-            transactionForm.relatedExpenseRequestId.trim().length > 0
-              ? transactionForm.relatedExpenseRequestId
-              : null,
-        })
-        .select("id")
-        .single();
 
       if (transactionError) {
         throw transactionError;
-      }
-
-      const { error: balanceUpdateError } = await supabase
-        .from("company_funds")
-        .update({ current_balance: nextBalance })
-        .eq("id", selectedFund.id)
-        .select("id")
-        .single();
-
-      if (balanceUpdateError) {
-        await supabase
-          .from("fund_transactions")
-          .delete()
-          .eq("id", insertedTransaction.id);
-        throw balanceUpdateError;
       }
 
       setFeedback({

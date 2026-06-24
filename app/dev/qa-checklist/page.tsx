@@ -1,29 +1,39 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import {
-  AlertTriangle,
   CheckCheck,
   ClipboardCheck,
   Database,
-  FileSearch,
+  FileCheck2,
+  FolderKanban,
+  Landmark,
   LogIn,
+  ReceiptText,
   RefreshCw,
   ShieldCheck,
-  UserCheck,
-  Users,
+  WalletCards,
 } from "lucide-react";
 
 import { useAuth } from "@/components/auth/AuthProvider";
-import { EmptyState } from "@/components/common/EmptyState";
 import { PageHeader } from "@/components/common/PageHeader";
 import { StatCard } from "@/components/common/StatCard";
 import type { RoleView } from "@/types";
 import { mapAuthRoleLabel } from "@/utils/auth";
 
-type QaSectionKey = "common" | "employee" | "manager" | "admin" | "error";
+type QaSectionKey =
+  | "foundation"
+  | "expense-request"
+  | "attachments"
+  | "approvals"
+  | "funds"
+  | "project-budget"
+  | "settlements"
+  | "accounting"
+  | "auth"
+  | "deployment";
 
 type QaItem = {
   id: string;
@@ -48,308 +58,429 @@ type QaChecklistState = {
 };
 
 const roleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
-const qaChecklistStorageKey = "eruty-qa-checklist-v1";
+const qaChecklistStorageKey = "eruty-qa-checklist-v2";
 const qaChecklistChangeEventName = "eruty-qa-checklist-change";
-
-const quickLinks = [
-  { href: "/login", label: "로그인", description: "이메일/비밀번호 로그인과 로그아웃 확인" },
-  { href: "/", label: "대시보드", description: "역할별 초기 진입 화면 및 집계 확인" },
-  { href: "/expenses/request", label: "지출 기안 작성", description: "경비 요청 저장 및 첨부 업로드 확인" },
-  { href: "/expenses/history", label: "내 지출 내역", description: "employee 본인 요청 조회와 상태 반영 확인" },
-  { href: "/approvals/pending", label: "승인 대기함", description: "manager/admin 검토 흐름 확인" },
-  { href: "/projects/budget", label: "프로젝트 예산", description: "예산 사용률 및 승인 반영 확인" },
-  { href: "/funds", label: "회사 자금 현황", description: "admin 자금 관리와 실질 가용 자금 확인" },
-  { href: "/settlements/monthly", label: "월말 정산", description: "정산 확정 및 지급 완료 처리 확인" },
-  { href: "/accounting/materials", label: "회계 자료", description: "CSV 다운로드 및 월별 집계 확인" },
-  { href: "/settings", label: "설정", description: "profiles/projects/categories 조회 확인" },
-  { href: "/dev/supabase-test", label: "Supabase 테스트", description: "테이블 연결 및 RLS 응답 점검" },
-];
 
 const qaSections: QaSection[] = [
   {
-    key: "common",
-    title: "공통 QA",
-    description: "로그인 상태와 권한 가드, 반응형 기본 상태를 먼저 점검합니다.",
-    icon: <ShieldCheck className="h-5 w-5" strokeWidth={1.9} />,
+    key: "foundation",
+    title: "1. 기초 데이터",
+    description: "Supabase 기본 마스터 데이터가 실제 화면의 선택지와 관계 표시 기준으로 정상 동작하는지 점검합니다.",
+    icon: <Database className="h-5 w-5" strokeWidth={1.9} />,
     accentClassName: "border-slate-200 bg-slate-50 text-slate-700",
     items: [
       {
-        id: "common-login",
-        title: "로그인",
-        description: "employee, manager, admin 계정으로 각각 로그인 시도",
-        expected: "로그인 성공 후 각 역할의 기본 진입 화면으로 이동하고 profile 정보가 헤더에 표시됩니다.",
-        routes: ["/login"],
+        id: "foundation-profiles",
+        title: "직원 데이터가 profiles에 존재한다",
+        description: "설정 화면 또는 Supabase Table Editor에서 직원 프로필이 실제로 조회되는지 확인합니다.",
+        expected: "profiles 테이블에 직원 데이터가 있고, 화면에서 이름과 부서가 정상 표시됩니다.",
+        routes: ["/settings", "/dev/supabase-test"],
       },
       {
-        id: "common-logout",
-        title: "로그아웃",
-        description: "헤더 프로필 영역의 로그아웃 동작 확인",
-        expected: "세션이 종료되고 로그인 페이지로 돌아가며 보호된 페이지 재접근이 차단됩니다.",
-        routes: ["/login", "/"],
+        id: "foundation-projects",
+        title: "프로젝트 데이터가 projects에 존재한다",
+        description: "프로젝트 목록이 설정 화면과 기안 작성 선택지에 실제 데이터로 노출되는지 확인합니다.",
+        expected: "projects 테이블 데이터가 프로젝트 화면과 선택지에 동일하게 표시됩니다.",
+        routes: ["/settings", "/projects/budget", "/expenses/request"],
       },
       {
-        id: "common-role-guard",
-        title: "권한 없는 페이지 접근 차단",
-        description: "역할에 맞지 않는 URL 직접 접근 시도",
-        expected: "프론트에서 접근 권한 없음 화면이 표시되고, 데이터가 노출되지 않습니다.",
-        routes: ["/approvals/pending", "/funds", "/settings"],
+        id: "foundation-categories",
+        title: "경비 유형 데이터가 expense_categories에 존재한다",
+        description: "경비 유형 관리와 기안 작성 화면의 경비 유형 선택지가 같은 기준으로 노출되는지 확인합니다.",
+        expected: "expense_categories 테이블의 활성 데이터만 신규 선택지에 표시됩니다.",
+        routes: ["/settings", "/expenses/request"],
       },
       {
-        id: "common-session-refresh",
-        title: "새로고침 시 로그인 유지",
-        description: "로그인 후 브라우저 새로고침 또는 직접 URL 접근",
-        expected: "세션이 유지되고 다시 로그인하지 않아도 같은 계정 기준으로 화면이 복원됩니다.",
-        routes: ["/", "/expenses/history"],
-      },
-      {
-        id: "common-mobile",
-        title: "모바일 화면 기본 확인",
-        description: "브라우저 반응형 모드로 390px 전후 해상도 점검",
-        expected: "레이아웃이 깨지지 않고 스크롤/버튼/표 영역이 기본 사용 가능 상태를 유지합니다.",
-        routes: ["/", "/expenses/request", "/approvals/pending"],
+        id: "foundation-inactive-filter",
+        title: "inactive 데이터는 신규 선택지에서 제외된다",
+        description: "비활성 프로젝트/경비 유형을 만든 뒤 신규 기안 작성 선택지에서 제외되는지 확인합니다.",
+        expected: "inactive 항목은 신규 선택지에서 보이지 않지만, 기존 내역 화면에서는 이름이 유지됩니다.",
+        routes: ["/expenses/request", "/expenses/history", "/approvals/pending"],
       },
     ],
   },
   {
-    key: "employee",
-    title: "employee QA",
-    description: "직원 계정 기준으로 경비 신청, 첨부, 상태 추적 흐름을 점검합니다.",
-    icon: <UserCheck className="h-5 w-5" strokeWidth={1.9} />,
+    key: "expense-request",
+    title: "2. 지출 기안",
+    description: "직원이 실제 경비 요청을 제출하고, 제출 결과가 내역 화면에 반영되는지 확인합니다.",
+    icon: <ReceiptText className="h-5 w-5" strokeWidth={1.9} />,
     accentClassName: "border-sky-200 bg-sky-50 text-sky-700",
     items: [
       {
-        id: "employee-request-create",
-        title: "지출 기안 작성",
-        description: "필수값 입력 후 승인 요청 제출",
-        expected: "`expense_requests`에 row가 생성되고 성공 메시지와 요청번호가 표시됩니다.",
+        id: "expense-required-validation",
+        title: "필수값 누락 시 오류 표시",
+        description: "제목, 프로젝트, 경비 유형, 사용일, 금액 등 필수값을 비우고 제출을 시도합니다.",
+        expected: "폼에서 필수 입력 오류가 표시되고 expense_requests insert가 실행되지 않습니다.",
         routes: ["/expenses/request"],
       },
       {
-        id: "employee-attachment-upload",
-        title: "증빙 파일 첨부",
-        description: "jpg, jpeg, png, pdf 파일 첨부 후 제출",
-        expected: "Storage `expense-evidence`에 파일이 저장되고 `expense_attachments`에 row가 생성되며 `evidence_status = attached`가 반영됩니다.",
+        id: "expense-insert-success",
+        title: "정상 제출 시 expense_requests row 생성",
+        description: "정상 입력값으로 승인 요청을 제출하고 Supabase Table Editor 또는 테스트 화면에서 row 생성 여부를 확인합니다.",
+        expected: "expense_requests에 새 row가 생성되고 요청번호가 화면에 표시됩니다.",
         routes: ["/expenses/request", "/dev/supabase-test"],
       },
       {
-        id: "employee-history-visible",
-        title: "제출 후 내 지출 내역 표시",
-        description: "방금 제출한 요청이 내 지출 내역 목록에 보이는지 확인",
-        expected: "최신순으로 목록에 표시되고 요청번호, 상태, 증빙 상태가 Supabase 값과 일치합니다.",
+        id: "expense-history-sync",
+        title: "제출 후 내 지출 내역에 표시",
+        description: "방금 제출한 요청이 최신순으로 내 지출 내역 화면에 보이는지 확인합니다.",
+        expected: "요청번호, 상태, 금액, 사용처가 동일하게 내 지출 내역에 표시됩니다.",
         routes: ["/expenses/history"],
       },
       {
-        id: "employee-status-before-approval",
-        title: "승인 전 상태 확인",
-        description: "제출 직후 상태와 증빙 컬럼 확인",
-        expected: "`submitted`는 승인대기로 표시되고 증빙 미첨부 건은 눈에 띄게 구분됩니다.",
-        routes: ["/expenses/history"],
+        id: "expense-personal-settlement",
+        title: "개인카드/현금은 정산 요청 대상",
+        description: "개인카드 또는 현금 결제수단으로 기안 작성 시 정산 요청 흐름이 자연스럽게 연결되는지 확인합니다.",
+        expected: "개인카드/현금 선택 시 정산 요청 여부가 정상 반영되고 이후 정산 집계 대상이 됩니다.",
+        routes: ["/expenses/request", "/expenses/history", "/settlements/monthly"],
       },
       {
-        id: "employee-status-rejected-revision",
-        title: "반려/수정요청 상태 확인",
-        description: "manager 또는 admin 처리 후 employee 화면 재확인",
-        expected: "반려, 수정요청 상태가 Supabase 업데이트 값과 동일하게 즉시 보입니다.",
-        routes: ["/expenses/history"],
-      },
-      {
-        id: "employee-settlement-preview",
-        title: "승인 후 정산 예정 반영 확인",
-        description: "개인카드 또는 현금 사용 승인 건의 정산 관련 상태 확인",
-        expected: "내 지출 내역과 대시보드 employee 요약에서 정산 대상 흐름이 자연스럽게 반영됩니다.",
-        routes: ["/expenses/history", "/"],
+        id: "expense-corporate-settlement",
+        title: "법인카드는 정산 요청 제외 가능",
+        description: "법인카드 결제수단으로 기안 작성 시 정산 제외 선택이 가능한지 확인합니다.",
+        expected: "법인카드 요청은 정산 대상 아님으로 분류되고 직원 지급 집계에서 제외됩니다.",
+        routes: ["/expenses/request", "/settlements/monthly", "/accounting/materials"],
       },
     ],
   },
   {
-    key: "manager",
-    title: "manager QA",
-    description: "관리자 계정 기준으로 승인 검토와 대시보드 반영 흐름을 점검합니다.",
-    icon: <Users className="h-5 w-5" strokeWidth={1.9} />,
-    accentClassName: "border-amber-200 bg-amber-50 text-amber-700",
-    items: [
-      {
-        id: "manager-pending-list",
-        title: "승인 대기함 조회",
-        description: "submitted, revision_requested, approved, rejected 상태 목록 확인",
-        expected: "전체 직원 요청이 최신순으로 보이고 employee 계정에서는 접근할 수 없어야 합니다.",
-        routes: ["/approvals/pending"],
-      },
-      {
-        id: "manager-detail-view",
-        title: "직원 요청 상세 확인",
-        description: "검토 버튼으로 상세 검토 화면 이동",
-        expected: "요청번호, 직원명, 경비유형, 프로젝트, 메모 등 Supabase 단건 데이터가 정확히 보입니다.",
-        routes: ["/approvals/pending"],
-      },
-      {
-        id: "manager-proof-check",
-        title: "증빙 파일 확인",
-        description: "상세 검토 화면에서 첨부 목록과 링크 확인",
-        expected: "첨부 파일명, 유형, 업로드일이 보이고 미첨부 건은 경고 박스로 표시됩니다.",
-        routes: ["/approvals/pending"],
-      },
-      {
-        id: "manager-approve",
-        title: "승인 처리",
-        description: "승인 금액 입력 후 승인 저장",
-        expected: "`expense_requests.status = approved`, `approved_at`, `approved_amount`, `approver_id`가 저장되고 승인 대기함과 대시보드 집계가 갱신됩니다.",
-        routes: ["/approvals/pending", "/"],
-      },
-      {
-        id: "manager-reject",
-        title: "반려 처리",
-        description: "메모 입력 후 반려 저장",
-        expected: "`status = rejected`와 반려 사유가 저장되고 employee 화면에서도 같은 상태가 보입니다.",
-        routes: ["/approvals/pending", "/expenses/history"],
-      },
-      {
-        id: "manager-revision",
-        title: "수정요청 처리",
-        description: "메모 입력 후 수정요청 저장",
-        expected: "`status = revision_requested`가 저장되고 employee가 내역 화면에서 수정요청 상태를 확인할 수 있습니다.",
-        routes: ["/approvals/pending", "/expenses/history"],
-      },
-      {
-        id: "manager-dashboard-sync",
-        title: "대시보드 반영 확인",
-        description: "승인/반려 후 대시보드 요약과 최근 요청 목록 확인",
-        expected: "승인 대기 건수, 최근 기안 목록, 프로젝트/경비 유형 집계가 실데이터 기준으로 다시 계산됩니다.",
-        routes: ["/"],
-      },
-    ],
-  },
-  {
-    key: "admin",
-    title: "admin QA",
-    description: "최고관리자 계정 기준으로 운영 기능과 전체 접근 권한을 점검합니다.",
-    icon: <Database className="h-5 w-5" strokeWidth={1.9} />,
+    key: "attachments",
+    title: "3. 증빙 첨부",
+    description: "증빙 파일 업로드와 evidence 상태 반영 흐름이 실제 Storage/DB 기준으로 동작하는지 확인합니다.",
+    icon: <FileCheck2 className="h-5 w-5" strokeWidth={1.9} />,
     accentClassName: "border-emerald-200 bg-emerald-50 text-emerald-700",
     items: [
       {
-        id: "admin-settings",
-        title: "직원/프로젝트/경비유형 관리",
-        description: "설정 화면의 사용자, 프로젝트, 경비 유형 탭 확인",
-        expected: "profiles, projects, expense_categories가 조회되고 admin만 접근 가능해야 합니다.",
-        routes: ["/settings"],
-      },
-      {
-        id: "admin-funds",
-        title: "회사 자금 현황 관리",
-        description: "자금 항목 추가, 수정, 비활성화 및 거래 등록 확인",
-        expected: "`company_funds`, `fund_transactions`에 변경이 반영되고 대시보드 자금 카드와 일관되게 계산됩니다.",
-        routes: ["/funds", "/"],
-      },
-      {
-        id: "admin-budget",
-        title: "프로젝트 예산 확인",
-        description: "프로젝트별 총예산, 사용액, 사용률, 예산 로그 확인",
-        expected: "승인 처리 후 DB trigger 기준으로 `used_amount`, `remaining_amount`, `project_budget_logs`가 반영됩니다.",
-        routes: ["/projects/budget", "/approvals/pending"],
-      },
-      {
-        id: "admin-settlement-confirm",
-        title: "월말 정산 확정",
-        description: "선택 월 기준 직원별 정산 확정 처리",
-        expected: "`monthly_settlements`, `settlement_items`에 중복 없이 저장되고 확정 상태가 목록에 표시됩니다.",
-        routes: ["/settlements/monthly"],
-      },
-      {
-        id: "admin-settlement-paid",
-        title: "지급 완료 처리",
-        description: "confirmed 상태 정산에 대해 지급 완료 처리",
-        expected: "`monthly_settlements.status = paid`, `paid_at`이 저장되고 회계 자료의 지급 상태에도 반영됩니다.",
-        routes: ["/settlements/monthly", "/accounting/materials"],
-      },
-      {
-        id: "admin-accounting-csv",
-        title: "회계 자료 CSV 다운로드",
-        description: "월 선택 후 전체/개별 CSV 다운로드 버튼 실행",
-        expected: "데이터가 있을 때 UTF-8 BOM이 포함된 CSV가 다운로드되고, 데이터가 없으면 안내 메시지가 표시됩니다.",
-        routes: ["/accounting/materials"],
-      },
-      {
-        id: "admin-rls-all-access",
-        title: "RLS 적용 후 전체 접근 정상 확인",
-        description: "admin 계정으로 전 메뉴 접근 및 실데이터 조회 확인",
-        expected: "admin은 전체 운영 화면을 정상 조회/수정할 수 있고 employee/manager 제한 범위는 유지됩니다.",
-        routes: ["/", "/settings", "/funds", "/settlements/monthly", "/accounting/materials"],
-      },
-    ],
-  },
-  {
-    key: "error",
-    title: "에러 케이스 QA",
-    description: "입력 오류, 파일 제약, 권한 오류, 빈 데이터 화면을 점검합니다.",
-    icon: <AlertTriangle className="h-5 w-5" strokeWidth={1.9} />,
-    accentClassName: "border-rose-200 bg-rose-50 text-rose-700",
-    items: [
-      {
-        id: "error-required-fields",
-        title: "필수값 누락",
-        description: "지출 기안 작성에서 필수 입력 없이 제출 시도",
-        expected: "화면에서 필수값 오류가 표시되고 insert가 실행되지 않아야 합니다.",
+        id: "attachment-allowed-upload",
+        title: "허용 파일 업로드 성공",
+        description: "jpg, jpeg, png, pdf 파일을 첨부하고 요청을 제출합니다.",
+        expected: "허용 파일은 업로드 성공 메시지가 표시되고 Storage에 저장됩니다.",
         routes: ["/expenses/request"],
       },
       {
-        id: "error-invalid-file-type",
-        title: "잘못된 파일 형식",
-        description: "jpg/jpeg/png/pdf 외 파일 첨부 시도",
-        expected: "허용되지 않는 형식 안내가 표시되고 업로드 대상에 포함되지 않아야 합니다.",
+        id: "attachment-size-limit",
+        title: "10MB 초과 파일 제한",
+        description: "10MB를 초과하는 파일을 선택해 첨부 제한이 걸리는지 확인합니다.",
+        expected: "제출 전 파일 크기 제한 안내가 표시되고 업로드 대상에 포함되지 않습니다.",
         routes: ["/expenses/request"],
       },
       {
-        id: "error-file-size-limit",
-        title: "10MB 초과 파일",
-        description: "10MB를 넘는 첨부 파일 선택 시도",
-        expected: "제출 전에 크기 제한 안내가 표시되고 업로드가 차단되어야 합니다.",
+        id: "attachment-file-type-limit",
+        title: "허용되지 않는 파일 형식 제한",
+        description: "exe, zip, docx 등 허용되지 않는 형식의 파일을 첨부해봅니다.",
+        expected: "허용되지 않는 파일 형식 안내가 표시되고 첨부가 차단됩니다.",
         routes: ["/expenses/request"],
       },
       {
-        id: "error-forbidden-approval",
-        title: "권한 없는 승인 처리",
-        description: "employee 계정으로 승인 상세 URL 직접 접근 또는 저장 시도",
-        expected: "접근 권한 없음 또는 저장 차단 메시지가 표시되고 `expense_requests` update가 발생하지 않아야 합니다.",
-        routes: ["/approvals/pending"],
+        id: "attachment-row-created",
+        title: "expense_attachments row 생성",
+        description: "파일 첨부 후 제출한 요청에 대해 expense_attachments 테이블 row 생성 여부를 확인합니다.",
+        expected: "expense_request_id, file_type, file_name, file_path가 실제 DB에 저장됩니다.",
+        routes: ["/approvals/pending", "/dev/supabase-test"],
       },
       {
-        id: "error-budget-overrun",
-        title: "예산 초과 승인",
-        description: "남은 예산보다 큰 승인 건을 승인 시도",
-        expected: "경고 또는 confirm이 표시되고, 승인 진행 시에도 예산 초과 상태가 프로젝트 화면에 반영되어야 합니다.",
-        routes: ["/approvals/pending", "/projects/budget"],
-      },
-      {
-        id: "error-empty-state",
-        title: "데이터 0개 EmptyState",
-        description: "조회 결과가 없는 월/필터/계정 조합으로 화면 확인",
-        expected: "mock row 대신 EmptyState 또는 명확한 안내 문구가 표시되어야 합니다.",
+        id: "attachment-evidence-status",
+        title: "evidence_status = attached 반영",
+        description: "첨부가 있는 요청의 evidence_status가 attached로 저장되고 화면에도 반영되는지 확인합니다.",
+        expected: "내 지출 내역, 승인 대기함, 회계 자료 화면에 증빙 상태가 첨부완료 또는 확인완료로 표시됩니다.",
         routes: ["/expenses/history", "/approvals/pending", "/accounting/materials"],
       },
     ],
   },
+  {
+    key: "approvals",
+    title: "4. 승인 처리",
+    description: "관리자 검토에서 상태 변경과 메모 저장, 집계 반영이 제대로 되는지 확인합니다.",
+    icon: <ClipboardCheck className="h-5 w-5" strokeWidth={1.9} />,
+    accentClassName: "border-amber-200 bg-amber-50 text-amber-700",
+    items: [
+      {
+        id: "approval-approved",
+        title: "승인 시 status = approved",
+        description: "승인 대기함 상세 검토 화면에서 승인 처리 후 상태 반영을 확인합니다.",
+        expected: "expense_requests.status가 approved로 바뀌고 승인일과 승인금액이 저장됩니다.",
+        routes: ["/approvals/pending"],
+      },
+      {
+        id: "approval-rejected",
+        title: "반려 시 status = rejected",
+        description: "관리자 메모를 입력하고 반려 처리한 뒤 직원 화면에서 반영 여부를 확인합니다.",
+        expected: "status가 rejected로 저장되고 내 지출 내역에도 반려 상태가 표시됩니다.",
+        routes: ["/approvals/pending", "/expenses/history"],
+      },
+      {
+        id: "approval-revision",
+        title: "수정요청 시 status = revision_requested",
+        description: "수정요청 처리 후 상태값과 메모 저장 여부를 확인합니다.",
+        expected: "status가 revision_requested로 저장되고 직원 화면에서 수정요청 상태가 보입니다.",
+        routes: ["/approvals/pending", "/expenses/history"],
+      },
+      {
+        id: "approval-admin-memo",
+        title: "관리자 메모 저장",
+        description: "반려 또는 수정요청 시 입력한 메모가 상세 검토 화면에 다시 보이는지 확인합니다.",
+        expected: "관리자 메모가 reject_reason 또는 메모 영역에 저장되어 재조회됩니다.",
+        routes: ["/approvals/pending"],
+      },
+      {
+        id: "approval-dashboard-sync",
+        title: "승인 후 대시보드 반영",
+        description: "승인 또는 반려 후 대시보드 요약 카드와 최근 목록 반영 여부를 확인합니다.",
+        expected: "승인대기 건수, 최근 지출 기안 목록, 프로젝트/경비 유형 집계가 최신 데이터 기준으로 갱신됩니다.",
+        routes: ["/", "/approvals/pending"],
+      },
+    ],
+  },
+  {
+    key: "funds",
+    title: "5. 자금 현황",
+    description: "회사 자금 항목과 입출금 거래가 잔액 및 가용 자금 계산과 일관되게 연결되는지 확인합니다.",
+    icon: <Landmark className="h-5 w-5" strokeWidth={1.9} />,
+    accentClassName: "border-indigo-200 bg-indigo-50 text-indigo-700",
+    items: [
+      {
+        id: "funds-create",
+        title: "자금 항목 추가 가능",
+        description: "새 자금 항목을 추가하고 목록 카드에 즉시 반영되는지 확인합니다.",
+        expected: "company_funds에 row가 생성되고 자금 현황 화면 카드에 새 항목이 나타납니다.",
+        routes: ["/funds"],
+      },
+      {
+        id: "funds-deposit-balance",
+        title: "입금 거래 시 잔액 증가",
+        description: "입금 거래를 추가한 뒤 해당 자금 항목 잔액이 증가하는지 확인합니다.",
+        expected: "fund_transactions 저장 후 current_balance가 증가하고 최근 거래 내역에도 표시됩니다.",
+        routes: ["/funds"],
+      },
+      {
+        id: "funds-withdrawal-balance",
+        title: "출금 거래 시 잔액 감소",
+        description: "출금 거래를 추가한 뒤 해당 자금 항목 잔액이 감소하는지 확인합니다.",
+        expected: "fund_transactions 저장 후 current_balance가 감소하고 거래 후 잔액이 일치합니다.",
+        routes: ["/funds"],
+      },
+      {
+        id: "funds-total-balance",
+        title: "총 보유 자금 계산 정상",
+        description: "active 자금 항목들의 잔액 합계가 상단 총 보유 자금 카드와 일치하는지 확인합니다.",
+        expected: "inactive 자금은 제외되고 active current_balance 합계만 총 보유 자금으로 집계됩니다.",
+        routes: ["/funds", "/"],
+      },
+      {
+        id: "funds-available-balance",
+        title: "실질 가용 자금 계산 정상",
+        description: "승인 지출 예정액과 정산 예정액을 차감한 값이 실질 가용 자금 카드와 맞는지 확인합니다.",
+        expected: "총 보유 자금 - 승인 지출 예정액 - 직원 정산 예정액 계산이 자금 현황과 대시보드에서 동일합니다.",
+        routes: ["/funds", "/"],
+      },
+    ],
+  },
+  {
+    key: "project-budget",
+    title: "6. 프로젝트 예산",
+    description: "프로젝트 예산 입력과 승인 시 예산 차감 로직이 정상 반영되는지 확인합니다.",
+    icon: <FolderKanban className="h-5 w-5" strokeWidth={1.9} />,
+    accentClassName: "border-cyan-200 bg-cyan-50 text-cyan-700",
+    items: [
+      {
+        id: "budget-input",
+        title: "프로젝트 예산 입력 가능",
+        description: "프로젝트 관리 또는 예산 화면에서 총 예산 값을 입력/수정합니다.",
+        expected: "projects.budget_amount가 저장되고 프로젝트 예산 화면에 표시됩니다.",
+        routes: ["/settings", "/projects/budget"],
+      },
+      {
+        id: "budget-used-amount",
+        title: "승인 시 used_amount 증가",
+        description: "프로젝트가 연결된 지출 요청을 승인한 뒤 예산 사용액 증가 여부를 확인합니다.",
+        expected: "approved 상태가 되면 프로젝트 used_amount가 증가하고 대시보드 집계에도 반영됩니다.",
+        routes: ["/approvals/pending", "/projects/budget", "/"],
+      },
+      {
+        id: "budget-remaining-amount",
+        title: "remaining_amount 감소",
+        description: "승인 후 프로젝트 잔여 예산이 자동 감소하는지 확인합니다.",
+        expected: "remaining_amount = budget_amount - used_amount 기준으로 일관되게 갱신됩니다.",
+        routes: ["/projects/budget"],
+      },
+      {
+        id: "budget-overrun-warning",
+        title: "예산 초과 시 경고 표시",
+        description: "잔여 예산보다 큰 지출 승인 시 경고 문구가 보이는지 확인합니다.",
+        expected: "승인 전에 예산 초과 경고가 표시되고 사용자가 확인해야만 승인이 진행됩니다.",
+        routes: ["/approvals/pending"],
+      },
+      {
+        id: "budget-duplicate-protection",
+        title: "중복 승인 시 중복 차감 방지",
+        description: "이미 approved 처리된 요청을 다시 승인해도 예산이 한 번만 반영되는지 확인합니다.",
+        expected: "project_budget_logs 중복 방지 기준으로 used_amount가 두 번 차감되지 않습니다.",
+        routes: ["/approvals/pending", "/projects/budget"],
+      },
+    ],
+  },
+  {
+    key: "settlements",
+    title: "7. 월말 정산",
+    description: "승인된 개인 선지출이 정산 대상으로 잘 묶이고, 정산 확정과 지급 완료가 이어지는지 확인합니다.",
+    icon: <WalletCards className="h-5 w-5" strokeWidth={1.9} />,
+    accentClassName: "border-purple-200 bg-purple-50 text-purple-700",
+    items: [
+      {
+        id: "settlement-target-filter",
+        title: "승인된 개인카드/현금만 정산 대상",
+        description: "approved + settlement_requested + 개인카드/현금 건만 정산 집계에 포함되는지 확인합니다.",
+        expected: "개인 선지출 승인건만 직원별 정산 예정액으로 집계됩니다.",
+        routes: ["/settlements/monthly", "/expenses/history"],
+      },
+      {
+        id: "settlement-corporate-excluded",
+        title: "법인카드 제외",
+        description: "법인카드 승인 건이 월말 정산 직원 지급액에 포함되지 않는지 확인합니다.",
+        expected: "법인카드 사용 건은 직원 지급 대상에서 제외됩니다.",
+        routes: ["/settlements/monthly", "/accounting/materials"],
+      },
+      {
+        id: "settlement-missing-proof-hold",
+        title: "증빙 미첨부는 보류 처리",
+        description: "증빙이 없는 승인 건이 보류 금액으로 분리되는지 확인합니다.",
+        expected: "미첨부 승인건은 지급 예정액이 아니라 보류 금액으로 집계됩니다.",
+        routes: ["/settlements/monthly", "/accounting/materials"],
+      },
+      {
+        id: "settlement-confirm",
+        title: "정산 확정 가능",
+        description: "선택 월 기준 정산 확정 버튼으로 monthly_settlements와 settlement_items 생성 여부를 확인합니다.",
+        expected: "정산 확정 후 confirmed 상태로 저장되고 중복 확정이 방지됩니다.",
+        routes: ["/settlements/monthly"],
+      },
+      {
+        id: "settlement-paid",
+        title: "지급 완료 처리 가능",
+        description: "confirmed 상태 정산을 paid로 변경하고 지급 완료일 반영 여부를 확인합니다.",
+        expected: "monthly_settlements.status = paid, paid_at 저장 후 회계 자료 화면에도 지급 상태가 반영됩니다.",
+        routes: ["/settlements/monthly", "/accounting/materials"],
+      },
+    ],
+  },
+  {
+    key: "accounting",
+    title: "8. 회계 자료",
+    description: "월별 회계 자료 집계와 CSV 내보내기 기준이 실제 데이터와 맞는지 확인합니다.",
+    icon: <FileCheck2 className="h-5 w-5" strokeWidth={1.9} />,
+    accentClassName: "border-rose-200 bg-rose-50 text-rose-700",
+    items: [
+      {
+        id: "accounting-monthly-expenses",
+        title: "월별 지출 조회 정상",
+        description: "선택 월 기준 expense_requests가 전체 지출 내역 탭에 정상 조회되는지 확인합니다.",
+        expected: "요청번호, 직원명, 프로젝트, 경비유형, 증빙상태가 실제 DB 값과 일치합니다.",
+        routes: ["/accounting/materials"],
+      },
+      {
+        id: "accounting-employee-settlements",
+        title: "직원별 정산 내역 표시",
+        description: "직원별 승인 금액, 정산 예정액, 지급 상태가 monthly_settlements 기준으로 보이는지 확인합니다.",
+        expected: "월말 정산 화면 집계와 회계 자료 화면의 직원별 정산 내역이 일치합니다.",
+        routes: ["/accounting/materials", "/settlements/monthly"],
+      },
+      {
+        id: "accounting-project-expenses",
+        title: "프로젝트별 지출 표시",
+        description: "프로젝트별 지출 내역과 총액/건수가 실제 expense_requests 기준으로 집계되는지 확인합니다.",
+        expected: "프로젝트 예산 화면과 회계 자료 프로젝트 탭의 금액 흐름이 일관됩니다.",
+        routes: ["/accounting/materials", "/projects/budget"],
+      },
+      {
+        id: "accounting-category-expenses",
+        title: "경비 유형별 지출 표시",
+        description: "expense_categories 기준 합계가 경비 유형별 지출 내역 탭에 정상 표시되는지 확인합니다.",
+        expected: "경비 유형별 총액과 증빙 완료율이 실제 데이터 기준으로 계산됩니다.",
+        routes: ["/accounting/materials"],
+      },
+      {
+        id: "accounting-missing-proofs",
+        title: "증빙 누락 목록 표시",
+        description: "evidence_status가 none이거나 실제 첨부가 없는 요청이 누락 목록에 나타나는지 확인합니다.",
+        expected: "증빙 누락 목록에 해당 요청이 빠짐없이 노출되고 상태 배지가 일관되게 보입니다.",
+        routes: ["/accounting/materials"],
+      },
+    ],
+  },
+  {
+    key: "auth",
+    title: "9. 권한/로그인",
+    description: "로그인, 로그아웃, 권한 제한, 새로고침 유지까지 실제 사용자 흐름 기준으로 확인합니다.",
+    icon: <LogIn className="h-5 w-5" strokeWidth={1.9} />,
+    accentClassName: "border-teal-200 bg-teal-50 text-teal-700",
+    items: [
+      {
+        id: "auth-login",
+        title: "로그인 정상 동작",
+        description: "employee, manager, admin 계정으로 각각 로그인합니다.",
+        expected: "로그인 성공 후 해당 역할에 맞는 화면과 메뉴만 표시됩니다.",
+        routes: ["/login", "/"],
+      },
+      {
+        id: "auth-logout",
+        title: "로그아웃 정상 동작",
+        description: "로그아웃 후 보호된 화면 접근이 차단되는지 확인합니다.",
+        expected: "로그아웃 시 로그인 페이지로 이동하고 세션이 정리됩니다.",
+        routes: ["/login"],
+      },
+      {
+        id: "auth-role-guard",
+        title: "권한 없는 페이지 접근 차단",
+        description: "employee로 승인 대기함, 설정, 자금 현황 등에 직접 접근해봅니다.",
+        expected: "접근 권한이 없습니다 안내가 표시되고 데이터가 노출되지 않습니다.",
+        routes: ["/approvals/pending", "/funds", "/settings"],
+      },
+      {
+        id: "auth-session-refresh",
+        title: "새로고침 시 로그인 유지",
+        description: "로그인 후 주요 화면에서 새로고침 또는 직접 URL 접근을 수행합니다.",
+        expected: "세션이 유지되고 같은 계정 기준으로 화면이 다시 로드됩니다.",
+        routes: ["/", "/expenses/history", "/approvals/pending"],
+      },
+    ],
+  },
+  {
+    key: "deployment",
+    title: "10. 배포 확인",
+    description: "운영 배포 URL에서 환경변수, 새로고침, 실제 Supabase 데이터 표시까지 점검합니다.",
+    icon: <ShieldCheck className="h-5 w-5" strokeWidth={1.9} />,
+    accentClassName: "border-orange-200 bg-orange-50 text-orange-700",
+    items: [
+      {
+        id: "deploy-vercel-url",
+        title: "Vercel URL 접속 정상",
+        description: "배포된 운영 URL이 열리고 기본 레이아웃이 깨지지 않는지 확인합니다.",
+        expected: "로그인 페이지 또는 홈 화면이 정상 렌더링되고 콘솔 치명 오류가 없습니다.",
+      },
+      {
+        id: "deploy-env-vars",
+        title: "환경변수 누락 없음",
+        description: "배포 환경에서 NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY가 정상 설정됐는지 확인합니다.",
+        expected: "Supabase 연결 오류 없이 데이터 조회가 가능하고 디버그 화면에서도 설정 상태가 정상입니다.",
+        routes: ["/dev/supabase-test"],
+      },
+      {
+        id: "deploy-refresh-safe",
+        title: "새로고침 시 오류 없음",
+        description: "여러 화면에서 새로고침, 직접 URL 접근, 뒤로가기를 반복해봅니다.",
+        expected: "401, 404, hydration error 없이 정상적으로 화면이 복원됩니다.",
+        routes: ["/", "/expenses/history", "/approvals/pending"],
+      },
+      {
+        id: "deploy-supabase-data",
+        title: "Supabase 데이터 표시 정상",
+        description: "운영 URL에서 실제 데이터가 로컬과 같은 기준으로 보이는지 확인합니다.",
+        expected: "mock fallback 없이 실제 Supabase 데이터만 표시되고 EmptyState와 오류 메시지도 정상 동작합니다.",
+        routes: ["/", "/expenses/history", "/accounting/materials", "/funds"],
+      },
+    ],
+  },
 ];
-
-function formatDateTime(value: string | null) {
-  if (!value) {
-    return "-";
-  }
-
-  const parsedDate = new Date(value);
-
-  if (Number.isNaN(parsedDate.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("ko-KR", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(parsedDate);
-}
 
 function getInitialState(): QaChecklistState {
   return {
@@ -406,7 +537,28 @@ function subscribeChecklistState(callback: () => void) {
   };
 }
 
-function QaSectionBadge({
+function formatDateTime(value: string | null) {
+  if (!value) {
+    return "-";
+  }
+
+  const parsedDate = new Date(value);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsedDate);
+}
+
+function SectionBadge({
   title,
   icon,
   className,
@@ -473,54 +625,55 @@ export default function QaChecklistPage() {
     <div className="space-y-8">
       <PageHeader
         title="QA 체크리스트"
-        description="운영 배포 전 ERUTY 자금관리 시스템의 로그인, 권한, Supabase 실데이터 흐름을 역할별로 빠짐없이 점검합니다."
+        description="배포 전 실제 업무 흐름 기준으로 지출, 승인, 자금, 예산, 정산, 회계 자료 기능을 빠짐없이 점검하는 개발용 체크리스트입니다."
         roles={roleViews}
         activeRole="대표 보기"
-        eyebrow="개발 전용 QA"
-        badgeText="사이드바 비노출"
+        eyebrow="개발용 검수 페이지"
+        badgeText="운영 메뉴 비노출"
       />
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          title="전체 QA 항목"
+          title="전체 점검 항목"
           value={`${qaStats.totalCount}개`}
-          description="공통, employee, manager, admin, 에러 케이스를 합친 수입니다."
+          description="기초 데이터부터 배포 확인까지 실제 업무 흐름 기준 점검 항목입니다."
           icon={<ClipboardCheck className="h-5 w-5" strokeWidth={1.8} />}
         />
         <StatCard
           title="완료 항목"
           value={`${qaStats.completedCount}개`}
-          description="이 브라우저에서 체크 완료한 QA 항목 수입니다."
+          description="현재 브라우저 localStorage에 체크 완료로 저장된 항목 수입니다."
           icon={<CheckCheck className="h-5 w-5" strokeWidth={1.8} />}
         />
         <StatCard
           title="남은 항목"
           value={`${qaStats.remainingCount}개`}
-          description="아직 확인되지 않은 QA 항목입니다."
-          icon={<FileSearch className="h-5 w-5" strokeWidth={1.8} />}
+          description="아직 확인하지 않은 항목 수입니다. 배포 전 0개를 목표로 확인해 주세요."
+          icon={<RefreshCw className="h-5 w-5" strokeWidth={1.8} />}
         />
         <StatCard
           title="진행률"
           value={`${qaStats.progressRate}%`}
-          description={`현재 로그인 역할: ${profile ? mapAuthRoleLabel(profile.role) : "확인 중"}`}
-          icon={<RefreshCw className="h-5 w-5" strokeWidth={1.8} />}
+          description={`현재 로그인 계정: ${profile ? `${profile.name} (${mapAuthRoleLabel(profile.role)})` : "확인 중"}`}
+          icon={<ShieldCheck className="h-5 w-5" strokeWidth={1.8} />}
         />
       </section>
 
       <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
-            <h3 className="text-lg font-semibold text-slate-950">QA 진행 가이드</h3>
+            <h3 className="text-lg font-semibold text-slate-950">사용 가이드</h3>
             <p className="mt-1 text-sm leading-6 text-slate-500">
-              모든 항목은 mock fallback 없이 현재 Supabase 실데이터 기준으로 확인합니다. 체크 상태는 이 브라우저의
-              localStorage에 저장되며, 데이터베이스에는 기록되지 않습니다.
+              이 페이지는 실제 DB를 수정하지 않고 수동 QA 진행 상태만 저장합니다. 체크 상태는 현재 브라우저의
+              <code className="mx-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-700">localStorage</code>
+              에 저장되며, 운영 메뉴에는 노출되지 않습니다.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
             <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
               <LogIn className="h-4 w-4" strokeWidth={1.9} />
-              마지막 업데이트: {formatDateTime(checklistState.updatedAt)}
+              마지막 저장 시각: {formatDateTime(checklistState.updatedAt)}
             </span>
             <button
               type="button"
@@ -541,34 +694,6 @@ export default function QaChecklistPage() {
         </div>
       </section>
 
-      <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">
-        <div className="flex items-start gap-3">
-          <Database className="mt-0.5 h-5 w-5 text-[var(--primary)]" strokeWidth={1.9} />
-          <div>
-            <h3 className="text-lg font-semibold text-slate-950">Supabase 실데이터 확인 포인트</h3>
-            <p className="mt-1 text-sm leading-6 text-slate-500">
-              아래 항목은 QA 중 함께 확인하면 좋습니다. `expense_requests`, `expense_attachments`, `monthly_settlements`,
-              `settlement_items`, `company_funds`, `fund_transactions`, `project_budget_logs` 값이 실제 화면과 일치하는지
-              Table Editor 또는 `/dev/supabase-test`로 교차 확인해주세요.
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {quickLinks.map((link) => (
-            <Link
-              key={link.href}
-              href={link.href}
-              className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 transition hover:border-slate-300 hover:bg-white"
-            >
-              <p className="text-sm font-semibold text-slate-900">{link.label}</p>
-              <p className="mt-1 text-sm leading-6 text-slate-500">{link.description}</p>
-              <p className="mt-2 text-xs font-medium text-slate-400">{link.href}</p>
-            </Link>
-          ))}
-        </div>
-      </section>
-
       {qaSections.map((section) => {
         const completedCount = section.items.filter((item) => checklistState.checkedMap[item.id]).length;
 
@@ -579,20 +704,19 @@ export default function QaChecklistPage() {
           >
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
-                <QaSectionBadge
+                <SectionBadge
                   title={section.title}
                   icon={section.icon}
                   className={section.accentClassName}
                 />
-                <h3 className="mt-4 text-xl font-semibold text-slate-950">{section.title}</h3>
-                <p className="mt-1 text-sm leading-6 text-slate-500">{section.description}</p>
+                <p className="mt-4 text-sm leading-6 text-slate-500">{section.description}</p>
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
                 <p className="font-semibold text-slate-900">
                   {completedCount} / {section.items.length} 완료
                 </p>
-                <p className="mt-1">각 항목을 확인한 뒤 체크해두면 새로고침 후에도 유지됩니다.</p>
+                <p className="mt-1">체크 시 현재 브라우저에 자동 저장됩니다.</p>
               </div>
             </div>
 
@@ -606,21 +730,30 @@ export default function QaChecklistPage() {
                     className={[
                       "rounded-3xl border px-5 py-5 transition",
                       isChecked
-                        ? "border-emerald-200 bg-emerald-50/80"
+                        ? "border-emerald-200 bg-emerald-50/70"
                         : "border-slate-200 bg-slate-50/80",
                     ].join(" ")}
                   >
                     <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                       <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-3">
                           <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full bg-white px-2 text-xs font-semibold text-slate-500 shadow-sm">
                             {index + 1}
                           </span>
-                          <h4 className="text-base font-semibold text-slate-950">{item.title}</h4>
+                          <label
+                            htmlFor={item.id}
+                            className="cursor-pointer text-base font-semibold text-slate-950"
+                          >
+                            {item.title}
+                          </label>
                         </div>
+
                         <p className="mt-3 text-sm leading-6 text-slate-600">{item.description}</p>
+
                         <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-4">
-                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">기대 결과</p>
+                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                            기대 결과
+                          </p>
                           <p className="mt-2 text-sm leading-6 text-slate-700">{item.expected}</p>
                         </div>
 
@@ -639,19 +772,24 @@ export default function QaChecklistPage() {
                         ) : null}
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => toggleItem(item.id)}
+                      <label
+                        htmlFor={item.id}
                         className={[
-                          "inline-flex min-w-[132px] items-center justify-center gap-2 rounded-2xl border px-4 py-3 text-sm font-semibold shadow-sm transition",
+                          "inline-flex cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 text-sm font-semibold shadow-sm transition",
                           isChecked
-                            ? "border-emerald-300 bg-emerald-600 text-white hover:bg-emerald-700"
+                            ? "border-emerald-300 bg-emerald-600 text-white"
                             : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50",
                         ].join(" ")}
                       >
-                        <ClipboardCheck className="h-4 w-4" strokeWidth={1.9} />
+                        <input
+                          id={item.id}
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleItem(item.id)}
+                          className="h-4 w-4 rounded border-slate-300 text-[var(--primary)] focus:ring-[var(--primary)]"
+                        />
                         {isChecked ? "확인 완료" : "체크하기"}
-                      </button>
+                      </label>
                     </div>
                   </article>
                 );
@@ -660,16 +798,6 @@ export default function QaChecklistPage() {
           </section>
         );
       })}
-
-      {!profile ? (
-        <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-8 shadow-sm">
-          <EmptyState
-            className="mt-0 border-none bg-slate-50 px-0 py-0"
-            title="로그인 정보를 확인하는 중입니다."
-            description="현재 사용자 역할을 불러온 뒤 체크리스트 진행 상태를 함께 확인합니다."
-          />
-        </section>
-      ) : null}
     </div>
   );
 }
