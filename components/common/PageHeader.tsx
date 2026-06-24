@@ -1,6 +1,14 @@
+"use client";
+
 import { Bell, ChevronDown, ShieldCheck } from "lucide-react";
 
+import { useAuth } from "@/components/auth/AuthProvider";
 import type { RoleView } from "@/types";
+import {
+  getUserInitials,
+  mapAuthRoleLabel,
+  mapAuthRoleToView,
+} from "@/utils/auth";
 
 type PageHeaderProps = {
   title: string;
@@ -19,6 +27,14 @@ export function PageHeader({
   eyebrow = "관리자 포털",
   badgeText,
 }: PageHeaderProps) {
+  const { profile } = useAuth();
+  const profileRoleView = profile ? mapAuthRoleToView(profile.role) : null;
+  const resolvedActiveRole =
+    profileRoleView && roles.includes(profileRoleView) ? profileRoleView : activeRole;
+  const profileMeta = [profile?.department, profile?.position || (profile ? mapAuthRoleLabel(profile.role) : "")]
+    .filter((value) => value && value.trim().length > 0)
+    .join(" · ");
+
   return (
     <header className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
       <div>
@@ -46,10 +62,10 @@ export function PageHeader({
               <button
                 key={role}
                 type="button"
-                aria-pressed={role === activeRole}
+                aria-pressed={role === resolvedActiveRole}
                 className={[
                   "rounded-xl px-3 py-2 text-sm font-medium transition",
-                  role === activeRole
+                  role === resolvedActiveRole
                     ? "bg-[var(--primary)] text-white shadow-sm"
                     : "text-slate-500 hover:bg-slate-100 hover:text-slate-900",
                 ].join(" ")}
@@ -73,11 +89,15 @@ export function PageHeader({
             className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-left shadow-sm transition hover:border-slate-300"
           >
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--primary-soft)] text-sm font-semibold text-[var(--primary)]">
-              ER
+              {getUserInitials(profile?.name)}
             </div>
             <div>
-              <p className="text-sm font-semibold text-slate-900">ERUTY Admin</p>
-              <p className="text-xs text-slate-500">재무관리 담당자</p>
+              <p className="text-sm font-semibold text-slate-900">
+                {profile?.name ?? "로그인 사용자"}
+              </p>
+              <p className="text-xs text-slate-500">
+                {profileMeta || "사용자 정보 불러오는 중"}
+              </p>
             </div>
             <ChevronDown className="h-4 w-4 text-slate-400" strokeWidth={1.9} />
           </button>

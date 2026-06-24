@@ -132,28 +132,44 @@ export const pendingApprovals: PendingApproval[] = [
 
 export const projectBudgets: ProjectBudget[] = [
   {
+    id: "project-budget-ai-diary",
     name: "AI 일기 서비스 개발",
     totalBudget: 50000000,
     spentBudget: 20000000,
+    remainingBudget: 30000000,
     usageRate: 40,
+    status: "정상",
+    budgetConfigured: true,
   },
   {
+    id: "project-budget-content-rnd",
     name: "콘텐츠 투자 플랫폼 R&D",
     totalBudget: 120000000,
     spentBudget: 90000000,
+    remainingBudget: 30000000,
     usageRate: 75,
+    status: "주의",
+    budgetConfigured: true,
   },
   {
+    id: "project-budget-internal-si",
     name: "내부 SI 개발",
     totalBudget: 20000000,
     spentBudget: 6000000,
+    remainingBudget: 14000000,
     usageRate: 30,
+    status: "정상",
+    budgetConfigured: true,
   },
   {
+    id: "project-budget-marketing",
     name: "마케팅·행사 운영",
     totalBudget: 15000000,
     spentBudget: 10500000,
+    remainingBudget: 4500000,
     usageRate: 70,
+    status: "주의",
+    budgetConfigured: true,
   },
 ];
 

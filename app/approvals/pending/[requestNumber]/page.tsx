@@ -7,10 +7,13 @@ import {
   ArrowLeft,
   CheckCircle2,
   CircleAlert,
+  Download,
+  ExternalLink,
   FileText,
   Receipt,
 } from "lucide-react";
 
+import { useAuth } from "@/components/auth/AuthProvider";
 import { AmountText } from "@/components/common/AmountText";
 import { EmptyState } from "@/components/common/EmptyState";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -35,7 +38,6 @@ import {
   inferUrgencyLevel,
   isSettlementTargetPaymentMethod,
   mapAttachmentFileType,
-  mapDbEvidenceStatus,
   mapDbExpenseStatus,
   mapDbPaymentMethod,
   mapSettlementRequested,
@@ -45,9 +47,17 @@ import {
   type DbExpenseStatus,
   type DbPaymentMethod,
 } from "@/utils/expenseRequests";
+import {
+  calculateProjectBudgetMetrics,
+  getApprovedExpenseAmount,
+  toBudgetNumber,
+  type DbProjectBudgetStatus,
+} from "@/utils/projectBudget";
 import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
 const roleViews: RoleView[] = ["직원 보기", "관리자 보기", "대표 보기"];
+const expenseEvidenceBucketName = "expense-evidence";
+const attachmentLinkExpiresInSeconds = 60 * 60;
 
 type ReviewDecision = "승인" | "반려" | "수정요청";
 type SettlementProcessingOption = "월말 정산 포함" | "정산 보류" | "정산 대상 아님";
@@ -78,6 +88,10 @@ type ProjectRelation = {
   id: string;
   name: string;
   status: string | null;
+  budget_amount: number | string | null;
+  used_amount: number | string | null;
+  remaining_amount: number | string | null;
+  budget_status: DbProjectBudgetStatus | null;
 };
 
 type CategoryRelation = {
@@ -97,6 +111,7 @@ type ExpenseRequestDetailRow = {
   expense_date: string;
   vendor: string;
   amount: number;
+  approved_amount: number | string | null;
   payment_method: DbPaymentMethod;
   settlement_requested: boolean;
   attendees: string | null;
@@ -131,16 +146,14 @@ type SimilarExpenseRow = {
   requester: RelationValue<Pick<RequesterRelation, "name">>;
 };
 
-type ApproverProfileRow = {
-  id: string;
-  role: string;
-  is_active: boolean | null;
-};
-
 type ApprovalAttachmentPreview = {
   id: string;
   typeLabel: string;
   fileName: string;
+  uploadedAt: string;
+  openUrl: string | null;
+  downloadUrl: string | null;
+  linkError: string | null;
 };
 
 type RecentSimilarExpense = {
@@ -171,6 +184,12 @@ type ApprovalDetailItem = {
   purpose: string;
   detailMemo: string;
   relatedProject: string;
+  projectId: string | null;
+  projectBudgetAmount: number;
+  projectUsedBudget: number;
+  projectRemainingBudget: number;
+  projectBudgetConfigured: boolean;
+  currentApprovedAmount: number;
   budgetCategory: string;
   status: ExpenseStatus;
   attachmentStatus: AttachmentStatus;
@@ -273,7 +292,7 @@ function mapRecentSimilarExpense(row: SimilarExpenseRow): RecentSimilarExpense {
 
 function mapBaseRequestToDetailItem(
   row: ExpenseRequestDetailRow,
-  attachments: ExpenseAttachmentRow[],
+  attachments: ApprovalAttachmentPreview[],
 ): ApprovalDetailItem {
   const requester = getSingleRelation(row.requester);
   const project = getSingleRelation(row.project);
@@ -297,24 +316,105 @@ function mapBaseRequestToDetailItem(
     purpose: normalizeText(row.purpose),
     detailMemo: normalizeText(row.memo, "등록된 메모가 없습니다."),
     relatedProject: project?.name ?? "미지정 프로젝트",
+    projectId: row.project_id,
+    projectBudgetAmount: toBudgetNumber(project?.budget_amount),
+    projectUsedBudget: toBudgetNumber(project?.used_amount),
+    projectRemainingBudget: toBudgetNumber(project?.remaining_amount),
+    projectBudgetConfigured: toBudgetNumber(project?.budget_amount) > 0,
+    currentApprovedAmount:
+      row.status === "approved"
+        ? getApprovedExpenseAmount({
+            amount: row.amount,
+            approved_amount: row.approved_amount,
+          })
+        : 0,
     budgetCategory: category?.name ?? "미분류",
     status: mapDbExpenseStatus(row.status),
-    attachmentStatus: mapDbEvidenceStatus(row.evidence_status),
-    attachments: attachments.map((attachment) => ({
-      id: attachment.id,
-      typeLabel: mapAttachmentFileType(attachment.file_type),
-      fileName: attachment.file_name,
-    })),
+    attachmentStatus: attachments.length > 0 ? "첨부완료" : "미첨부",
+    attachments,
     adminMemo: row.reject_reason ?? "",
   };
 }
 
+async function buildAttachmentPreview(
+  supabase: ReturnType<typeof getSupabaseBrowserClient>,
+  attachment: ExpenseAttachmentRow,
+): Promise<ApprovalAttachmentPreview> {
+  let openUrl: string | null = null;
+  let downloadUrl: string | null = null;
+  let linkError: string | null = null;
+
+  if (attachment.file_path) {
+    const publicUrl = supabase.storage
+      .from(expenseEvidenceBucketName)
+      .getPublicUrl(attachment.file_path).data.publicUrl;
+
+    openUrl = publicUrl || null;
+    downloadUrl = publicUrl || null;
+
+    const [openResult, downloadResult] = await Promise.all([
+      supabase.storage
+        .from(expenseEvidenceBucketName)
+        .createSignedUrl(attachment.file_path, attachmentLinkExpiresInSeconds),
+      supabase.storage
+        .from(expenseEvidenceBucketName)
+        .createSignedUrl(attachment.file_path, attachmentLinkExpiresInSeconds, {
+          download: attachment.file_name,
+        }),
+    ]);
+
+    if (!openResult.error && openResult.data?.signedUrl) {
+      openUrl = openResult.data.signedUrl;
+    }
+
+    if (!downloadResult.error && downloadResult.data?.signedUrl) {
+      downloadUrl = downloadResult.data.signedUrl;
+    }
+
+    if (!openUrl) {
+      linkError = getUserFacingSupabaseMessage(
+        openResult.error ?? downloadResult.error,
+        "파일 링크를 생성하지 못했습니다.",
+      );
+    } else if (openResult.error || downloadResult.error) {
+      linkError =
+        "서명 URL 생성에 실패하여 공개 URL로 연결했습니다. 버킷이 비공개면 열리지 않을 수 있습니다.";
+    }
+  } else {
+    linkError = "파일 경로 정보가 없습니다.";
+  }
+
+  if (!downloadUrl) {
+    downloadUrl = openUrl;
+  }
+
+  return {
+    id: attachment.id,
+    typeLabel: mapAttachmentFileType(attachment.file_type),
+    fileName: attachment.file_name,
+    uploadedAt: formatSupabaseDate(attachment.created_at),
+    openUrl,
+    downloadUrl,
+    linkError,
+  };
+}
+
 function getSupabaseErrorDetails(error: unknown): SaveErrorState {
+  const errorLike =
+    error && typeof error === "object"
+      ? (error as {
+          message?: string;
+          code?: string;
+          details?: string;
+          hint?: string;
+        })
+      : null;
+
   return {
     message: getUserFacingSupabaseMessage(error, "알 수 없는 오류가 발생했습니다."),
-    code: null,
-    details: null,
-    hint: null,
+    code: errorLike?.code ?? null,
+    details: errorLike?.details ?? null,
+    hint: errorLike?.hint ?? null,
   };
 }
 
@@ -335,6 +435,7 @@ export default function ApprovalDetailReviewPage() {
   const router = useRouter();
   const params = useParams<{ requestNumber: string }>();
   const requestId = decodeURIComponent(params.requestNumber);
+  const { isLoading: isAuthLoading, profile } = useAuth();
 
   const [detailItem, setDetailItem] = useState<ApprovalDetailItem | null>(null);
   const [projectMonthlySpent, setProjectMonthlySpent] = useState(0);
@@ -391,6 +492,7 @@ export default function ApprovalDetailReviewPage() {
               expense_date,
               vendor,
               amount,
+              approved_amount,
               payment_method,
               settlement_requested,
               attendees,
@@ -412,7 +514,11 @@ export default function ApprovalDetailReviewPage() {
               project:projects!expense_requests_project_id_fkey (
                 id,
                 name,
-                status
+                status,
+                budget_amount,
+                used_amount,
+                remaining_amount,
+                budget_status
               ),
               category:expense_categories!expense_requests_category_id_fkey (
                 id,
@@ -511,10 +617,13 @@ export default function ApprovalDetailReviewPage() {
           return;
         }
 
-        const mappedItem = mapBaseRequestToDetailItem(
-          row,
-          (attachmentsResult.data ?? []) as ExpenseAttachmentRow[],
+        const attachmentPreviews = await Promise.all(
+          ((attachmentsResult.data ?? []) as ExpenseAttachmentRow[]).map((attachment) =>
+            buildAttachmentPreview(supabase, attachment),
+          ),
         );
+
+        const mappedItem = mapBaseRequestToDetailItem(row, attachmentPreviews);
 
         setDetailItem(mappedItem);
         setProjectMonthlySpent(
@@ -582,6 +691,76 @@ export default function ApprovalDetailReviewPage() {
     return "정산 대상";
   }, [settlementProcessing]);
 
+  const projectedProjectBudget = useMemo(() => {
+    if (!detailItem?.projectId || !detailItem.projectBudgetConfigured) {
+      return null;
+    }
+
+    const baseUsedBudget = Math.max(
+      detailItem.projectUsedBudget - detailItem.currentApprovedAmount,
+      0,
+    );
+    const nextApprovedAmount =
+      decision === "승인" && !Number.isNaN(numericApprovedAmount)
+        ? numericApprovedAmount
+        : detailItem.currentApprovedAmount;
+
+    return calculateProjectBudgetMetrics(
+      detailItem.projectBudgetAmount,
+      baseUsedBudget + nextApprovedAmount,
+    );
+  }, [decision, detailItem, numericApprovedAmount]);
+
+  const budgetRiskSummary = useMemo(() => {
+    if (!detailItem?.projectId) {
+      return {
+        label: "프로젝트 미지정",
+        tone: "default" as const,
+      };
+    }
+
+    if (!detailItem.projectBudgetConfigured) {
+      return {
+        label: "예산 미설정",
+        tone: "warning" as const,
+      };
+    }
+
+    if (!projectedProjectBudget) {
+      return {
+        label: "예산 계산 준비 중",
+        tone: "default" as const,
+      };
+    }
+
+    if (projectedProjectBudget.remainingAmount < 0) {
+      return {
+        label: `예산 초과 예상 (${projectedProjectBudget.usageRate}%)`,
+        tone: "danger" as const,
+      };
+    }
+
+    if (projectedProjectBudget.usageRate >= 80) {
+      return {
+        label: `초과위험 (${projectedProjectBudget.usageRate}%)`,
+        tone: "warning" as const,
+      };
+    }
+
+    if (projectedProjectBudget.usageRate >= 60) {
+      return {
+        label: `주의 (${projectedProjectBudget.usageRate}%)`,
+        tone: "warning" as const,
+      };
+    }
+
+    return {
+      label: `정상 (${projectedProjectBudget.usageRate}%)`,
+      tone: "success" as const,
+    };
+  }, [detailItem, projectedProjectBudget]);
+  const canProcessApproval = profile?.role === "manager" || profile?.role === "admin";
+
   function handleApprovedAmountChange(value: string) {
     if (!detailItem) {
       return;
@@ -602,7 +781,7 @@ export default function ApprovalDetailReviewPage() {
       return;
     }
 
-    const clampedAmount = Math.min(nextValue, detailItem.amount);
+    const clampedAmount = Math.max(0, Math.min(nextValue, detailItem.amount));
     setApprovedAmount(String(clampedAmount));
     setErrors((current) => ({ ...current, approvedAmount: undefined }));
   }
@@ -618,6 +797,8 @@ export default function ApprovalDetailReviewPage() {
 
     if (approvedAmount.trim().length === 0 || Number.isNaN(numericApprovedAmount)) {
       nextErrors.approvedAmount = "승인 금액을 입력해주세요.";
+    } else if (numericApprovedAmount < 0) {
+      nextErrors.approvedAmount = "승인 금액은 0원보다 작을 수 없습니다.";
     } else if (numericApprovedAmount > requestedAmount) {
       nextErrors.approvedAmount = "승인 금액은 요청 금액보다 클 수 없습니다.";
     }
@@ -630,6 +811,22 @@ export default function ApprovalDetailReviewPage() {
 
     if (Object.keys(nextErrors).length > 0) {
       return;
+    }
+
+    if (
+      decision === "승인" &&
+      detailItem.projectId &&
+      detailItem.projectBudgetConfigured &&
+      projectedProjectBudget &&
+      projectedProjectBudget.remainingAmount < 0
+    ) {
+      const shouldContinue = window.confirm(
+        `이 승인으로 프로젝트 예산이 ${Math.abs(projectedProjectBudget.remainingAmount).toLocaleString("ko-KR")}원 초과됩니다. 그래도 승인하시겠습니까?`,
+      );
+
+      if (!shouldContinue) {
+        return;
+      }
     }
 
     if (!hasAttachment && decision === "승인" && settlementProcessing === "월말 정산 포함") {
@@ -653,43 +850,57 @@ export default function ApprovalDetailReviewPage() {
       return;
     }
 
+    if (isAuthLoading) {
+      setSaveError({
+        message: "로그인 사용자 정보를 확인하는 중입니다. 잠시 후 다시 시도해주세요.",
+        code: "AUTH_LOADING",
+        details: null,
+        hint: null,
+      });
+      return;
+    }
+
+    if (!profile?.id) {
+      setSaveError({
+        message: "로그인 관리자 프로필을 찾을 수 없습니다. 다시 로그인해주세요.",
+        code: "PROFILE_NOT_FOUND",
+        details: null,
+        hint: null,
+      });
+      return;
+    }
+
+    if (profile.role !== "manager" && profile.role !== "admin") {
+      setSaveError({
+        message: "승인 처리 권한이 없습니다. manager 또는 admin 계정으로 다시 시도해주세요.",
+        code: "FORBIDDEN",
+        details: null,
+        hint: null,
+      });
+      return;
+    }
+
     setIsSaving(true);
 
     try {
       const supabase = getSupabaseBrowserClient();
 
-      const { data: approverRows, error: approverError } = await supabase
-        .from("profiles")
-        .select("id, role, is_active")
-        .in("role", ["manager", "admin"])
-        .eq("is_active", true)
-        .order("created_at", { ascending: true })
-        .limit(1);
-
-      if (approverError) {
-        throw approverError;
-      }
-
-      const approver = (approverRows?.[0] ?? null) as ApproverProfileRow | null;
-
-      if (!approver?.id) {
-        throw new Error("manager 또는 admin 역할의 approver_id를 찾을 수 없습니다.");
-      }
-
       const nextStatus = getStatusFromDecision(decision);
       const approvedAt = decision === "승인" ? new Date().toISOString() : null;
       const normalizedAdminMemo = adminMemo.trim();
+      const nextApprovedAmount = decision === "승인" ? numericApprovedAmount : null;
 
       const { error: updateError } = await supabase
         .from("expense_requests")
         .update({
           status: nextStatus,
           approved_at: approvedAt,
-          approver_id: approver.id,
+          approved_amount: nextApprovedAmount,
+          approver_id: profile.id,
           reject_reason: normalizedAdminMemo.length > 0 ? normalizedAdminMemo : null,
         })
         .eq("id", detailItem.id)
-        .select("id, status")
+        .select("id, status, approved_amount")
         .single();
 
       if (updateError) {
@@ -758,6 +969,13 @@ export default function ApprovalDetailReviewPage() {
         <section className="rounded-[1.75rem] border border-rose-200 bg-rose-50 px-5 py-4 text-sm leading-6 text-rose-700 shadow-sm">
           <p className="font-semibold">처리 저장에 실패했습니다.</p>
           <p className="mt-2 whitespace-pre-wrap break-words">{saveError.message}</p>
+          {saveError.code ? <p className="mt-2">code: {saveError.code}</p> : null}
+          {saveError.details ? (
+            <p className="mt-1 whitespace-pre-wrap break-words">{saveError.details}</p>
+          ) : null}
+          {saveError.hint ? (
+            <p className="mt-1 whitespace-pre-wrap break-words">{saveError.hint}</p>
+          ) : null}
         </section>
       ) : null}
 
@@ -878,6 +1096,52 @@ export default function ApprovalDetailReviewPage() {
                 </div>
               </div>
 
+              {detailItem.projectId ? (
+                <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                        프로젝트 총예산
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">
+                        {detailItem.projectBudgetConfigured ? (
+                          <AmountText value={detailItem.projectBudgetAmount} />
+                        ) : (
+                          <span className="text-slate-400">미설정</span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                        현재 사용 예산
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">
+                        <AmountText value={detailItem.projectUsedBudget} />
+                      </p>
+                    </div>
+                    <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                        승인 후 예상 잔여
+                      </p>
+                      <p
+                        className={[
+                          "mt-2 text-sm font-semibold",
+                          projectedProjectBudget && projectedProjectBudget.remainingAmount < 0
+                            ? "text-rose-600"
+                            : "text-slate-900",
+                        ].join(" ")}
+                      >
+                        {detailItem.projectBudgetConfigured && projectedProjectBudget ? (
+                          <AmountText value={projectedProjectBudget.remainingAmount} />
+                        ) : (
+                          <span className="text-slate-400">계산 불가</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-sm font-semibold text-slate-900">동일 유형 최근 사용 내역 3건</p>
                 <div className="mt-3 space-y-3">
@@ -917,7 +1181,9 @@ export default function ApprovalDetailReviewPage() {
                   <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">첨부 유형</p>
                   <p className="mt-2 text-sm font-semibold text-slate-900">
                     {hasAttachment
-                      ? detailItem.attachments.map((attachment) => attachment.typeLabel).join(", ")
+                      ? Array.from(
+                          new Set(detailItem.attachments.map((attachment) => attachment.typeLabel)),
+                        ).join(", ")
                       : "미첨부"}
                   </p>
                 </div>
@@ -925,18 +1191,60 @@ export default function ApprovalDetailReviewPage() {
 
               <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-sm font-semibold text-slate-900">첨부 파일명</p>
-                  <div className="mt-3 space-y-2">
+                  <p className="text-sm font-semibold text-slate-900">첨부 파일 목록</p>
+                  <div className="mt-3 space-y-3">
                     {hasAttachment ? (
                       detailItem.attachments.map((attachment) => (
                         <div
                           key={attachment.id}
-                          className="rounded-2xl bg-white px-4 py-3 shadow-sm"
+                          className="rounded-2xl bg-white px-4 py-4 shadow-sm"
                         >
-                          <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                            {attachment.typeLabel}
-                          </span>
-                          <p className="mt-2 text-sm font-medium text-slate-700">{attachment.fileName}</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+                              {attachment.typeLabel}
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              업로드일 {attachment.uploadedAt}
+                            </span>
+                          </div>
+                          <p className="mt-3 break-all text-sm font-medium text-slate-700">
+                            {attachment.fileName}
+                          </p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {attachment.openUrl ? (
+                              <a
+                                href={attachment.openUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                              >
+                                <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.8} />
+                                열기
+                              </a>
+                            ) : (
+                              <span className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400">
+                                열기 링크 없음
+                              </span>
+                            )}
+                            {attachment.downloadUrl ? (
+                              <a
+                                href={attachment.downloadUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                              >
+                                <Download className="h-3.5 w-3.5" strokeWidth={1.8} />
+                                다운로드
+                              </a>
+                            ) : (
+                              <span className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400">
+                                다운로드 링크 없음
+                              </span>
+                            )}
+                          </div>
+                          {attachment.linkError ? (
+                            <p className="mt-2 text-xs text-amber-700">{attachment.linkError}</p>
+                          ) : null}
                         </div>
                       ))
                     ) : (
@@ -955,8 +1263,32 @@ export default function ApprovalDetailReviewPage() {
                           {detailItem.attachments[0]?.fileName}
                         </p>
                         <p className="mt-2 text-sm text-slate-500">
-                          실제 파일 미리보기는 아직 연결되지 않았고, 현재는 파일명만 표시합니다.
+                          실제 파일은 아래 버튼으로 열거나 다운로드할 수 있습니다.
                         </p>
+                        <div className="mt-4 flex flex-wrap justify-center gap-2">
+                          {detailItem.attachments[0]?.openUrl ? (
+                            <a
+                              href={detailItem.attachments[0].openUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" strokeWidth={1.8} />
+                              파일 열기
+                            </a>
+                          ) : null}
+                          {detailItem.attachments[0]?.downloadUrl ? (
+                            <a
+                              href={detailItem.attachments[0].downloadUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                            >
+                              <Download className="h-3.5 w-3.5" strokeWidth={1.8} />
+                              파일 다운로드
+                            </a>
+                          ) : null}
+                        </div>
                       </div>
                     ) : (
                       <div>
@@ -1010,8 +1342,8 @@ export default function ApprovalDetailReviewPage() {
                 />
                 <SummaryBlock
                   label="예산 위험 여부"
-                  value="별도 계산 전"
-                  tone="warning"
+                  value={budgetRiskSummary.label}
+                  tone={budgetRiskSummary.tone}
                 />
               </div>
 
@@ -1136,12 +1468,18 @@ export default function ApprovalDetailReviewPage() {
                 <button
                   type="button"
                   onClick={() => void handleSave()}
-                  disabled={isSaving}
+                  disabled={isSaving || !canProcessApproval}
                   className="inline-flex items-center justify-center rounded-2xl bg-[var(--primary)] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[var(--primary-strong)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isSaving ? "저장 중..." : "처리 저장"}
+                  {!canProcessApproval ? "권한 없음" : isSaving ? "저장 중..." : "처리 저장"}
                 </button>
               </div>
+
+              {!canProcessApproval ? (
+                <p className="mt-3 text-sm leading-6 text-amber-700">
+                  승인, 반려, 수정요청 저장은 manager 또는 admin 계정에서만 가능합니다.
+                </p>
+              ) : null}
             </section>
 
             <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">

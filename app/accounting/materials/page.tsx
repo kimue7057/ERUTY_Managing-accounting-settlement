@@ -27,7 +27,6 @@ import type {
   AccountingProcessingStatus,
   AttachmentStatus,
   ExpenseStatus,
-  MonthlySettlementEmployee,
   MonthlySettlementStatus,
   PaymentMethod,
   RoleView,
@@ -36,13 +35,14 @@ import type {
 import {
   formatSupabaseDate,
   getSingleRelation,
-  mapDbEvidenceStatus,
   mapDbExpenseStatus,
   mapDbPaymentMethod,
+  mapSettlementRequested,
   type DbEvidenceStatus,
   type DbExpenseStatus,
   type DbPaymentMethod,
 } from "@/utils/expenseRequests";
+import { createCsvContent, downloadCsvFile, type CsvColumn } from "@/utils/csv";
 import { formatNumber } from "@/utils/format";
 import { getUserFacingSupabaseMessage } from "@/utils/userFacingError";
 
@@ -141,6 +141,7 @@ type RelationValue<T> = T | T[] | null;
 type RequesterRelation = {
   id: string;
   name: string;
+  department: string | null;
 };
 
 type ProjectRelation = {
@@ -155,8 +156,15 @@ type CategoryRelation = {
 
 type ExpenseRequestRow = {
   id: string;
+  request_no: string;
+  title: string;
+  purpose: string | null;
+  memo: string | null;
+  reject_reason: string | null;
   amount: number;
   expense_date: string;
+  requested_at: string | null;
+  approved_at: string | null;
   vendor: string;
   status: DbExpenseStatus;
   settlement_requested: boolean;
@@ -167,16 +175,29 @@ type ExpenseRequestRow = {
   category: RelationValue<CategoryRelation>;
 };
 
+type ExpenseAttachmentRequestRow = {
+  expense_request_id: string;
+};
+
 type AccountingExpenseRow = {
   id: string;
+  requestNumber: string;
+  title: string;
+  employeeId: string;
   usedDate: string;
+  requestedDate: string;
+  approvedDate: string;
   employeeName: string;
+  department: string;
   projectName: string;
   expenseType: string;
   accountSubject: string;
   merchantName: string;
+  purpose: string;
+  memo: string;
   amount: number;
   paymentMethod: PaymentMethod;
+  settlementRequestedLabel: string;
   settlementEligibility: SettlementEligibility;
   attachmentStatus: AttachmentStatus;
   approvalStatus: ExpenseStatus;
@@ -206,11 +227,41 @@ type AccountSubjectRow = {
   proofRate: number;
 };
 
+type SettlementRecordStatus = "confirmed" | "paid" | "on_hold";
+
+type EmployeeSettlementDisplayStatus = MonthlySettlementStatus | "정산완료";
+
 type EmployeeSettlementRow = {
+  employeeId: string;
   employeeName: string;
+  department: string;
+  approvedAmount: number;
+  plannedAmount: number;
+  payoutStatus: EmployeeSettlementDisplayStatus;
+};
+
+type MonthlySettlementRecordRow = {
+  id: string;
+  employee_id: string;
+  approved_amount: number;
+  final_payment_amount: number;
+  status: SettlementRecordStatus;
+  confirmed_at: string | null;
+  paid_at: string | null;
+};
+
+type AggregatedEmployeeSettlement = {
+  employeeId: string;
+  employeeName: string;
+  department: string;
   approvedAmount: number;
   plannedAmount: number;
   payoutStatus: MonthlySettlementStatus;
+};
+
+type CsvDownloadFeedback = {
+  type: "error" | "notice";
+  message: string;
 };
 
 function createRecentMonthOptions(count = 12): MonthOption[] {
@@ -251,13 +302,16 @@ function getSettlementEligibility(row: ExpenseRequestRow): SettlementEligibility
     : "정산 대상 아님";
 }
 
-function getAccountingStatus(row: ExpenseRequestRow): AccountingProcessingStatus {
-  if (row.status === "approved" && row.evidence_status === "attached") {
+function getAccountingStatus(
+  row: ExpenseRequestRow,
+  hasAttachment: boolean,
+): AccountingProcessingStatus {
+  if (row.status === "approved" && hasAttachment) {
     return "처리완료";
   }
 
   if (
-    row.evidence_status === "none" ||
+    !hasAttachment ||
     row.status === "rejected" ||
     row.status === "on_hold" ||
     row.status === "revision_requested"
@@ -268,32 +322,108 @@ function getAccountingStatus(row: ExpenseRequestRow): AccountingProcessingStatus
   return "처리대기";
 }
 
-function mapExpenseRow(row: ExpenseRequestRow): AccountingExpenseRow {
+function normalizeExportText(value: string | null | undefined, fallback = "-") {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : fallback;
+}
+
+function mapSettlementRecordStatus(
+  settlementRecord: MonthlySettlementRecordRow | undefined,
+  defaultStatus: MonthlySettlementStatus,
+): EmployeeSettlementDisplayStatus {
+  if (settlementRecord?.status === "paid") {
+    return "지급완료";
+  }
+
+  if (settlementRecord?.status === "confirmed") {
+    return "정산완료";
+  }
+
+  return defaultStatus;
+}
+
+function getExpensePayoutStatus(
+  expense: AccountingExpenseRow,
+  settlementRecord: MonthlySettlementRecordRow | undefined,
+) {
+  if (expense.settlementEligibility !== "정산 대상") {
+    return "정산 대상 아님";
+  }
+
+  if (settlementRecord?.status === "paid") {
+    return "지급완료";
+  }
+
+  if (settlementRecord?.status === "confirmed") {
+    return "정산완료";
+  }
+
+  if (expense.attachmentStatus === "미첨부") {
+    return "보류";
+  }
+
+  if (expense.approvalStatus === "승인완료") {
+    return "지급대기";
+  }
+
+  return "정산대기";
+}
+
+function createAccountingCsvFileName(month: string, suffix?: string) {
+  return suffix
+    ? `eruty-accounting-${month}-${suffix}.csv`
+    : `eruty-accounting-${month}.csv`;
+}
+
+function mapExpenseRow(
+  row: ExpenseRequestRow,
+  attachmentCount: number,
+): AccountingExpenseRow {
   const requester = getSingleRelation(row.requester);
   const project = getSingleRelation(row.project);
   const category = getSingleRelation(row.category);
+  const attachmentStatus: AttachmentStatus =
+    attachmentCount > 0 ? "첨부완료" : "미첨부";
 
   return {
     id: row.id,
+    requestNumber: row.request_no,
+    title: normalizeExportText(row.title),
+    employeeId: requester?.id ?? `unknown-${row.id}`,
     usedDate: formatSupabaseDate(row.expense_date),
+    requestedDate: formatSupabaseDate(row.requested_at),
+    approvedDate: formatSupabaseDate(row.approved_at),
     employeeName: requester?.name ?? "미확인 직원",
+    department: normalizeExportText(requester?.department, "-"),
     projectName: project?.name ?? "미지정 프로젝트",
     expenseType: category?.name ?? "기타",
     accountSubject: category?.name ?? "기타",
     merchantName: row.vendor,
+    purpose: normalizeExportText(row.purpose),
+    memo: [normalizeExportText(row.memo, ""), normalizeExportText(row.reject_reason, "")]
+      .filter((value) => value.length > 0)
+      .join(" / "),
     amount: row.amount,
     paymentMethod: mapDbPaymentMethod(row.payment_method),
+    settlementRequestedLabel: mapSettlementRequested(row.settlement_requested),
     settlementEligibility: getSettlementEligibility(row),
-    attachmentStatus: mapDbEvidenceStatus(row.evidence_status),
+    attachmentStatus,
     approvalStatus: mapDbExpenseStatus(row.status),
-    accountingStatus: getAccountingStatus(row),
+    accountingStatus: getAccountingStatus(row, attachmentCount > 0),
   };
 }
 
-function buildMonthlySettlementEmployees(
+function getSettlementRecordMap(rows: MonthlySettlementRecordRow[]) {
+  return rows.reduce<Record<string, MonthlySettlementRecordRow>>((result, row) => {
+    result[row.employee_id] = row;
+    return result;
+  }, {});
+}
+
+function buildEmployeeSettlementRows(
   expenses: AccountingExpenseRow[],
-): MonthlySettlementEmployee[] {
-  const grouped = new Map<string, MonthlySettlementEmployee>();
+): AggregatedEmployeeSettlement[] {
+  const grouped = new Map<string, AggregatedEmployeeSettlement>();
 
   expenses
     .filter(
@@ -302,51 +432,27 @@ function buildMonthlySettlementEmployees(
         expense.approvalStatus === "승인완료",
     )
     .forEach((expense) => {
-      const current = grouped.get(expense.employeeName) ?? {
-        id: expense.employeeName,
+      const current = grouped.get(expense.employeeId) ?? {
+        employeeId: expense.employeeId,
         employeeName: expense.employeeName,
-        personalExpenseTotal: 0,
+        department: expense.department,
         approvedAmount: 0,
-        rejectedAmount: 0,
-        missingProofAmount: 0,
-        finalPayoutAmount: 0,
+        plannedAmount: 0,
         payoutStatus: "정산대기" as MonthlySettlementStatus,
-        expenses: [],
       };
-
-      current.personalExpenseTotal += expense.amount;
 
       current.approvedAmount += expense.amount;
 
       if (expense.attachmentStatus === "첨부완료") {
-        current.finalPayoutAmount += expense.amount;
-      } else {
-        current.missingProofAmount += expense.amount;
+        current.plannedAmount += expense.amount;
       }
 
-      current.expenses.push({
-        id: expense.id,
-        usedDate: expense.usedDate,
-        expenseType: expense.expenseType,
-        merchantName: expense.merchantName,
-        amount: expense.amount,
-        approvedAmount: expense.amount,
-        attachmentStatus: expense.attachmentStatus,
-        settlementStatus:
-          expense.attachmentStatus === "미첨부" ? "보류" : "지급대기",
-      });
-
-      grouped.set(expense.employeeName, current);
+      grouped.set(expense.employeeId, current);
     });
 
   return Array.from(grouped.values()).map((employee) => ({
     ...employee,
-    payoutStatus:
-      employee.missingProofAmount > 0
-        ? "보류"
-        : employee.finalPayoutAmount > 0
-          ? "지급대기"
-          : "정산대기",
+    payoutStatus: employee.plannedAmount > 0 ? "지급대기" : "정산대기",
   }));
 }
 
@@ -421,8 +527,15 @@ export default function AccountingMaterialsPage() {
     useState<(typeof statusFilterOptions)[number]>("전체");
   const [activeTab, setActiveTab] = useState<AccountingTabKey>("monthly-summary");
   const [rawExpenseRows, setRawExpenseRows] = useState<ExpenseRequestRow[]>([]);
+  const [attachmentCountByRequestId, setAttachmentCountByRequestId] = useState<
+    Record<string, number>
+  >({});
+  const [settlementRecordByEmployeeId, setSettlementRecordByEmployeeId] = useState<
+    Record<string, MonthlySettlementRecordRow>
+  >({});
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [downloadFeedback, setDownloadFeedback] = useState<CsvDownloadFeedback | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -430,6 +543,7 @@ export default function AccountingMaterialsPage() {
     async function loadAccountingRows() {
       setIsLoading(true);
       setLoadError(null);
+      setDownloadFeedback(null);
 
       if (!isSupabaseConfigured) {
         if (!isMounted) {
@@ -440,6 +554,8 @@ export default function AccountingMaterialsPage() {
           "Supabase 환경변수가 설정되지 않았습니다. NEXT_PUBLIC_SUPABASE_URL과 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY를 확인해주세요.",
         );
         setRawExpenseRows([]);
+        setAttachmentCountByRequestId({});
+        setSettlementRecordByEmployeeId({});
         setIsLoading(false);
         return;
       }
@@ -453,8 +569,15 @@ export default function AccountingMaterialsPage() {
           .select(
             `
               id,
+              request_no,
+              title,
+              purpose,
+              memo,
+              reject_reason,
               amount,
               expense_date,
+              requested_at,
+              approved_at,
               vendor,
               status,
               settlement_requested,
@@ -462,7 +585,8 @@ export default function AccountingMaterialsPage() {
               evidence_status,
               requester:profiles!expense_requests_user_id_fkey (
                 id,
-                name
+                name,
+                department
               ),
               project:projects!expense_requests_project_id_fkey (
                 id,
@@ -486,7 +610,52 @@ export default function AccountingMaterialsPage() {
           return;
         }
 
-        setRawExpenseRows((data ?? []) as ExpenseRequestRow[]);
+        const expenseRows = (data ?? []) as ExpenseRequestRow[];
+        const requestIds = expenseRows.map((row) => row.id);
+        let nextAttachmentCountByRequestId: Record<string, number> = {};
+
+        if (requestIds.length > 0) {
+          const { data: attachmentRows, error: attachmentError } = await supabase
+            .from("expense_attachments")
+            .select("expense_request_id")
+            .in("expense_request_id", requestIds);
+
+          if (attachmentError) {
+            throw attachmentError;
+          }
+
+          nextAttachmentCountByRequestId = (
+            (attachmentRows ?? []) as ExpenseAttachmentRequestRow[]
+          ).reduce<Record<string, number>>((acc, attachment) => {
+            acc[attachment.expense_request_id] = (acc[attachment.expense_request_id] ?? 0) + 1;
+            return acc;
+          }, {});
+        }
+
+        const { data: settlementRows, error: settlementError } = await supabase
+          .from("monthly_settlements")
+          .select(
+            `
+              id,
+              employee_id,
+              approved_amount,
+              final_payment_amount,
+              status,
+              confirmed_at,
+              paid_at
+            `,
+          )
+          .eq("settlement_month", selectedMonth);
+
+        if (settlementError) {
+          throw settlementError;
+        }
+
+        setRawExpenseRows(expenseRows);
+        setAttachmentCountByRequestId(nextAttachmentCountByRequestId);
+        setSettlementRecordByEmployeeId(
+          getSettlementRecordMap((settlementRows ?? []) as MonthlySettlementRecordRow[]),
+        );
       } catch (error) {
         const message = getUserFacingSupabaseMessage(
           error,
@@ -499,6 +668,8 @@ export default function AccountingMaterialsPage() {
 
         setLoadError(message);
         setRawExpenseRows([]);
+        setAttachmentCountByRequestId({});
+        setSettlementRecordByEmployeeId({});
       } finally {
         if (isMounted) {
           setIsLoading(false);
@@ -514,8 +685,9 @@ export default function AccountingMaterialsPage() {
   }, [selectedMonth]);
 
   const accountingRows = useMemo(
-    () => rawExpenseRows.map(mapExpenseRow),
-    [rawExpenseRows],
+    () =>
+      rawExpenseRows.map((row) => mapExpenseRow(row, attachmentCountByRequestId[row.id] ?? 0)),
+    [attachmentCountByRequestId, rawExpenseRows],
   );
 
   const projectOptions = useMemo(
@@ -536,25 +708,48 @@ export default function AccountingMaterialsPage() {
 
   const summary = useMemo<AccountingSummaryValues>(
     () => ({
-      totalExpenseCount: rawExpenseRows.length,
-      totalExpenseAmount: rawExpenseRows.reduce((sum, row) => sum + row.amount, 0),
-      proofCompletedCount: rawExpenseRows.filter((row) => row.evidence_status === "attached").length,
-      proofMissingCount: rawExpenseRows.filter((row) => row.evidence_status === "none").length,
-      accountingCompletedCount: rawExpenseRows.filter(
-        (row) => row.status === "approved" && row.evidence_status === "attached",
+      totalExpenseCount: accountingRows.length,
+      totalExpenseAmount: accountingRows.reduce((sum, row) => sum + row.amount, 0),
+      proofCompletedCount: accountingRows.filter(
+        (row) => row.attachmentStatus === "첨부완료",
+      ).length,
+      proofMissingCount: accountingRows.filter((row) => row.attachmentStatus === "미첨부").length,
+      accountingCompletedCount: accountingRows.filter(
+        (row) => row.accountingStatus === "처리완료",
       ).length,
     }),
-    [rawExpenseRows],
+    [accountingRows],
   );
 
   const employeeSettlementRows = useMemo<EmployeeSettlementRow[]>(() => {
-    return buildMonthlySettlementEmployees(filteredExpenses).map((employee) => ({
-      employeeName: employee.employeeName,
-      approvedAmount: employee.approvedAmount,
-      plannedAmount: employee.finalPayoutAmount,
-      payoutStatus: employee.payoutStatus,
-    }));
-  }, [filteredExpenses]);
+    return buildEmployeeSettlementRows(filteredExpenses).map((employee) => {
+      const settlementRecord = settlementRecordByEmployeeId[employee.employeeId];
+
+      return {
+        employeeId: employee.employeeId,
+        employeeName: employee.employeeName,
+        department: employee.department,
+        approvedAmount: settlementRecord?.approved_amount ?? employee.approvedAmount,
+        plannedAmount: settlementRecord?.final_payment_amount ?? employee.plannedAmount,
+        payoutStatus: mapSettlementRecordStatus(settlementRecord, employee.payoutStatus),
+      };
+    });
+  }, [filteredExpenses, settlementRecordByEmployeeId]);
+
+  const exportEmployeeSettlementRows = useMemo<EmployeeSettlementRow[]>(() => {
+    return buildEmployeeSettlementRows(accountingRows).map((employee) => {
+      const settlementRecord = settlementRecordByEmployeeId[employee.employeeId];
+
+      return {
+        employeeId: employee.employeeId,
+        employeeName: employee.employeeName,
+        department: employee.department,
+        approvedAmount: settlementRecord?.approved_amount ?? employee.approvedAmount,
+        plannedAmount: settlementRecord?.final_payment_amount ?? employee.plannedAmount,
+        payoutStatus: mapSettlementRecordStatus(settlementRecord, employee.payoutStatus),
+      };
+    });
+  }, [accountingRows, settlementRecordByEmployeeId]);
 
   const projectExpenseRows = useMemo<ProjectExpenseRow[]>(() => {
     const grouped = new Map<string, ProjectExpenseRow>();
@@ -578,6 +773,29 @@ export default function AccountingMaterialsPage() {
 
     return Array.from(grouped.values()).sort((left, right) => right.amount - left.amount);
   }, [filteredExpenses]);
+
+  const exportProjectExpenseRows = useMemo<ProjectExpenseRow[]>(() => {
+    const grouped = new Map<string, ProjectExpenseRow>();
+
+    accountingRows.forEach((expense) => {
+      const current = grouped.get(expense.projectName) ?? {
+        projectName: expense.projectName,
+        count: 0,
+        amount: 0,
+        approvedAmount: 0,
+        missingProofCount: 0,
+      };
+
+      current.count += 1;
+      current.amount += expense.amount;
+      current.approvedAmount += expense.approvalStatus === "승인완료" ? expense.amount : 0;
+      current.missingProofCount += expense.attachmentStatus === "미첨부" ? 1 : 0;
+
+      grouped.set(expense.projectName, current);
+    });
+
+    return Array.from(grouped.values()).sort((left, right) => right.amount - left.amount);
+  }, [accountingRows]);
 
   const accountSubjectRows = useMemo<AccountSubjectRow[]>(() => {
     const grouped = new Map<
@@ -610,9 +828,45 @@ export default function AccountingMaterialsPage() {
       .sort((left, right) => right.amount - left.amount);
   }, [filteredExpenses]);
 
+  const exportAccountSubjectRows = useMemo<AccountSubjectRow[]>(() => {
+    const grouped = new Map<
+      string,
+      { accountSubject: string; count: number; amount: number; proofCompletedCount: number }
+    >();
+
+    accountingRows.forEach((expense) => {
+      const current = grouped.get(expense.accountSubject) ?? {
+        accountSubject: expense.accountSubject,
+        count: 0,
+        amount: 0,
+        proofCompletedCount: 0,
+      };
+
+      current.count += 1;
+      current.amount += expense.amount;
+      current.proofCompletedCount += expense.attachmentStatus === "첨부완료" ? 1 : 0;
+
+      grouped.set(expense.accountSubject, current);
+    });
+
+    return Array.from(grouped.values())
+      .map((item) => ({
+        accountSubject: item.accountSubject,
+        count: item.count,
+        amount: item.amount,
+        proofRate: item.count === 0 ? 0 : Math.round((item.proofCompletedCount / item.count) * 100),
+      }))
+      .sort((left, right) => right.amount - left.amount);
+  }, [accountingRows]);
+
   const missingProofRows = useMemo(
     () => filteredExpenses.filter((expense) => expense.attachmentStatus === "미첨부"),
     [filteredExpenses],
+  );
+
+  const exportMissingProofRows = useMemo(
+    () => accountingRows.filter((expense) => expense.attachmentStatus === "미첨부"),
+    [accountingRows],
   );
 
   const rejectedHoldRows = useMemo(
@@ -621,6 +875,14 @@ export default function AccountingMaterialsPage() {
         ["반려", "보류", "수정요청"].includes(expense.approvalStatus),
       ),
     [filteredExpenses],
+  );
+
+  const exportRejectedHoldRows = useMemo(
+    () =>
+      accountingRows.filter((expense) =>
+        ["반려", "보류", "수정요청"].includes(expense.approvalStatus),
+      ),
+    [accountingRows],
   );
 
   const monthSummaryRows = [
@@ -653,14 +915,14 @@ export default function AccountingMaterialsPage() {
       id: "proof-complete",
       title: "증빙 완료 건수",
       value: isLoading ? null : <span>{summary.proofCompletedCount}건</span>,
-      description: "증빙이 첨부된 지출 건수입니다.",
+      description: "expense_attachments 기준으로 첨부가 있는 지출 건수입니다.",
       icon: <BadgeCheck className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
       id: "proof-missing",
       title: "증빙 누락 건수",
       value: isLoading ? null : <span>{summary.proofMissingCount}건</span>,
-      description: "evidence_status = none 인 지출 건수입니다.",
+      description: "expense_attachments가 없는 지출 건수입니다.",
       icon: <FileWarning className="h-5 w-5" strokeWidth={1.8} />,
     },
     {
@@ -671,6 +933,201 @@ export default function AccountingMaterialsPage() {
       icon: <Files className="h-5 w-5" strokeWidth={1.8} />,
     },
   ];
+
+  const allExpenseCsvColumns: CsvColumn<AccountingExpenseRow>[] = [
+    { key: "requestNumber", header: "요청번호" },
+    { key: "title", header: "경비 제목" },
+    { key: "usedDate", header: "사용일" },
+    { key: "requestedDate", header: "요청일" },
+    { key: "employeeName", header: "직원명" },
+    { key: "department", header: "부서" },
+    { key: "projectName", header: "프로젝트명" },
+    { key: "expenseType", header: "경비유형" },
+    { key: "merchantName", header: "사용처" },
+    { key: "purpose", header: "사용목적" },
+    { key: "paymentMethod", header: "결제수단" },
+    { key: "settlementRequestedLabel", header: "정산요청여부" },
+    { key: "amount", header: "금액" },
+    { key: "approvalStatus", header: "상태" },
+    { key: "attachmentStatus", header: "증빙상태" },
+    { key: "approvedDate", header: "승인일" },
+    {
+      key: "payoutStatus",
+      header: "지급상태",
+      accessor: (row) => getExpensePayoutStatus(row, settlementRecordByEmployeeId[row.employeeId]),
+    },
+    { key: "memo", header: "메모" },
+  ];
+
+  const employeeSettlementCsvColumns: CsvColumn<EmployeeSettlementRow>[] = [
+    { key: "employeeName", header: "직원명" },
+    { key: "department", header: "부서" },
+    { key: "approvedAmount", header: "승인 금액" },
+    { key: "plannedAmount", header: "정산 예정액" },
+    { key: "payoutStatus", header: "지급 상태" },
+  ];
+
+  const projectExpenseCsvColumns: CsvColumn<ProjectExpenseRow>[] = [
+    { key: "projectName", header: "프로젝트명" },
+    { key: "count", header: "건수" },
+    { key: "amount", header: "총 지출 금액" },
+    { key: "approvedAmount", header: "승인완료 금액" },
+    { key: "missingProofCount", header: "증빙 누락 건수" },
+  ];
+
+  const accountSubjectCsvColumns: CsvColumn<AccountSubjectRow>[] = [
+    { key: "accountSubject", header: "경비유형" },
+    { key: "count", header: "건수" },
+    { key: "amount", header: "총 지출 금액" },
+    { key: "proofRate", header: "증빙 완료율(%)" },
+  ];
+
+  function ensureDownloadReady() {
+    if (isLoading) {
+      setDownloadFeedback({
+        type: "notice",
+        message: "회계 자료를 불러오는 중입니다. 로딩이 끝난 뒤 다시 시도해주세요.",
+      });
+      return false;
+    }
+
+    if (loadError) {
+      setDownloadFeedback({
+        type: "error",
+        message: "회계 자료를 정상적으로 불러오지 못해 다운로드를 진행할 수 없습니다.",
+      });
+      return false;
+    }
+
+    return true;
+  }
+
+  function downloadSingleCsv<T>({
+    rows,
+    columns,
+    fileName,
+  }: {
+    rows: T[];
+    columns: CsvColumn<T>[];
+    fileName: string;
+  }) {
+    const csvContent = createCsvContent(rows, columns);
+    downloadCsvFile(fileName, csvContent);
+  }
+
+  function handleDatasetCsvDownload<T>({
+    rows,
+    columns,
+    fileName,
+  }: {
+    rows: T[];
+    columns: CsvColumn<T>[];
+    fileName: string;
+  }) {
+    if (!ensureDownloadReady()) {
+      return;
+    }
+
+    if (rows.length === 0) {
+      setDownloadFeedback({
+        type: "notice",
+        message: "내보낼 데이터가 없습니다.",
+      });
+      return;
+    }
+
+    try {
+      downloadSingleCsv({ rows, columns, fileName });
+      setDownloadFeedback(null);
+    } catch (error) {
+      setDownloadFeedback({
+        type: "error",
+        message: getUserFacingSupabaseMessage(
+          error,
+          "CSV 다운로드 중 알 수 없는 오류가 발생했습니다.",
+        ),
+      });
+    }
+  }
+
+  function handleDownloadAllAccountingFiles() {
+    if (!ensureDownloadReady()) {
+      return;
+    }
+
+    let downloadedFileCount = 0;
+
+    const tryDownload = <T,>({
+      rows,
+      columns,
+      fileName,
+    }: {
+      rows: T[];
+      columns: CsvColumn<T>[];
+      fileName: string;
+    }) => {
+      if (rows.length === 0) {
+        return;
+      }
+
+      downloadSingleCsv({ rows, columns, fileName });
+      downloadedFileCount += 1;
+    };
+
+    try {
+      tryDownload({
+        rows: accountingRows,
+        columns: allExpenseCsvColumns,
+        fileName: createAccountingCsvFileName(selectedMonth),
+      });
+      tryDownload({
+        rows: exportEmployeeSettlementRows,
+        columns: employeeSettlementCsvColumns,
+        fileName: createAccountingCsvFileName(selectedMonth, "employee-settlements"),
+      });
+      tryDownload({
+        rows: exportProjectExpenseRows,
+        columns: projectExpenseCsvColumns,
+        fileName: createAccountingCsvFileName(selectedMonth, "project-summary"),
+      });
+      tryDownload({
+        rows: exportAccountSubjectRows,
+        columns: accountSubjectCsvColumns,
+        fileName: createAccountingCsvFileName(selectedMonth, "category-summary"),
+      });
+      tryDownload({
+        rows: exportMissingProofRows,
+        columns: allExpenseCsvColumns,
+        fileName: createAccountingCsvFileName(selectedMonth, "missing-proofs"),
+      });
+      tryDownload({
+        rows: exportRejectedHoldRows,
+        columns: allExpenseCsvColumns,
+        fileName: createAccountingCsvFileName(selectedMonth, "rejected-hold"),
+      });
+
+      if (downloadedFileCount === 0) {
+        setDownloadFeedback({
+          type: "notice",
+          message: "내보낼 데이터가 없습니다.",
+        });
+        return;
+      }
+
+      setDownloadFeedback({
+        type: "notice",
+        message: `${downloadedFileCount}개의 회계자료 CSV 다운로드를 시작했습니다.`,
+      });
+    } catch (error) {
+      setDownloadFeedback({
+        type: "error",
+        message: getUserFacingSupabaseMessage(
+          error,
+          "전체 회계자료 다운로드 중 알 수 없는 오류가 발생했습니다.",
+        ),
+      });
+    }
+  }
 
   const renderActiveTab = () => {
     if (activeTab === "monthly-summary") {
@@ -757,7 +1214,7 @@ export default function AccountingMaterialsPage() {
       return (
         <TabSection
           title="직원별 정산 내역"
-          description="승인완료된 개인카드/현금 사용 건만 기준으로 직원별 승인 금액과 정산 예정액을 표시합니다."
+          description="승인완료된 개인카드/현금 사용 건만 기준으로 직원별 승인 금액, 정산 예정액, 지급 상태를 monthly_settlements 기준으로 표시합니다."
           columns={employeeSettlementColumns}
           hasRows={employeeSettlementRows.length > 0}
           emptyMessage="조건에 맞는 직원별 정산 내역이 없습니다."
@@ -765,7 +1222,7 @@ export default function AccountingMaterialsPage() {
           loadingMessage="직원별 정산 내역을 불러오는 중입니다."
         >
           {employeeSettlementRows.map((row) => (
-            <tr key={row.employeeName} className="border-b border-slate-100 last:border-b-0">
+            <tr key={row.employeeId} className="border-b border-slate-100 last:border-b-0">
               <td className="px-4 py-4 font-medium text-slate-900">{row.employeeName}</td>
               <td className="px-4 py-4 text-right font-medium text-slate-900">
                 <AmountText value={row.approvedAmount} />
@@ -846,7 +1303,7 @@ export default function AccountingMaterialsPage() {
       return (
         <TabSection
           title="증빙 누락 목록"
-          description="evidence_status = none 인 지출만 모아서 회계 전달 전 보완 대상을 확인합니다."
+          description="실제 첨부파일이 없는 지출만 모아서 회계 전달 전 보완 대상을 확인합니다."
           columns={issueColumns}
           hasRows={missingProofRows.length > 0}
           emptyMessage="증빙 누락 건이 없습니다."
@@ -937,12 +1394,33 @@ export default function AccountingMaterialsPage() {
         </section>
       ) : null}
 
+      {downloadFeedback ? (
+        <section
+          className={[
+            "rounded-[1.75rem] px-5 py-4 text-sm leading-6 shadow-sm",
+            downloadFeedback.type === "error"
+              ? "border border-rose-200 bg-rose-50 text-rose-700"
+              : "border border-slate-200 bg-slate-50 text-slate-700",
+          ].join(" ")}
+        >
+          <p className="font-semibold">
+            {downloadFeedback.type === "error"
+              ? "다운로드를 진행하지 못했습니다."
+              : "다운로드 안내"}
+          </p>
+          <p className="mt-2 whitespace-pre-wrap break-words">{downloadFeedback.message}</p>
+        </section>
+      ) : null}
+
       <section className="rounded-[1.75rem] border border-slate-200/90 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0 flex-1">
             <h3 className="text-lg font-semibold text-slate-950">필터 및 전달 액션</h3>
             <p className="mt-1 text-sm text-slate-500">
               월 선택을 기준으로 실제 expense_requests 자료를 조회하고, 프로젝트와 상태 필터를 탭 데이터에 적용합니다.
+            </p>
+            <p className="mt-2 text-xs font-medium text-slate-400">
+              CSV 다운로드는 선택한 월의 전체 자료 기준으로 생성되며, 프로젝트/상태 필터는 화면 표시용으로만 적용됩니다.
             </p>
 
             <div className="mt-5 grid gap-4 xl:grid-cols-[220px_220px_220px]">
@@ -1008,15 +1486,101 @@ export default function AccountingMaterialsPage() {
             </div>
           </div>
 
-          <div className="flex w-full flex-col gap-3 xl:w-auto xl:min-w-[240px]">
+          <div className="flex w-full flex-col gap-3 xl:w-auto xl:min-w-[360px]">
             <button
               type="button"
-              onClick={() => window.alert("엑셀 다운로드 기능은 추후 연동 예정입니다.")}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+              onClick={handleDownloadAllAccountingFiles}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:opacity-95"
             >
               <Download className="h-4.5 w-4.5" strokeWidth={1.8} />
-              엑셀 다운로드
+              전체 회계자료 다운로드
             </button>
+            <div className="grid gap-3 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() =>
+                  handleDatasetCsvDownload({
+                    rows: accountingRows,
+                    columns: allExpenseCsvColumns,
+                    fileName: createAccountingCsvFileName(selectedMonth),
+                  })
+                }
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                <Download className="h-4.5 w-4.5" strokeWidth={1.8} />
+                전체 지출 내역 CSV
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleDatasetCsvDownload({
+                    rows: exportEmployeeSettlementRows,
+                    columns: employeeSettlementCsvColumns,
+                    fileName: createAccountingCsvFileName(selectedMonth, "employee-settlements"),
+                  })
+                }
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                <Download className="h-4.5 w-4.5" strokeWidth={1.8} />
+                직원별 정산 CSV
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleDatasetCsvDownload({
+                    rows: exportProjectExpenseRows,
+                    columns: projectExpenseCsvColumns,
+                    fileName: createAccountingCsvFileName(selectedMonth, "project-summary"),
+                  })
+                }
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                <Download className="h-4.5 w-4.5" strokeWidth={1.8} />
+                프로젝트별 지출 CSV
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleDatasetCsvDownload({
+                    rows: exportAccountSubjectRows,
+                    columns: accountSubjectCsvColumns,
+                    fileName: createAccountingCsvFileName(selectedMonth, "category-summary"),
+                  })
+                }
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                <Download className="h-4.5 w-4.5" strokeWidth={1.8} />
+                경비 유형별 지출 CSV
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleDatasetCsvDownload({
+                    rows: exportMissingProofRows,
+                    columns: allExpenseCsvColumns,
+                    fileName: createAccountingCsvFileName(selectedMonth, "missing-proofs"),
+                  })
+                }
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                <Download className="h-4.5 w-4.5" strokeWidth={1.8} />
+                증빙 누락 목록 CSV
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleDatasetCsvDownload({
+                    rows: exportRejectedHoldRows,
+                    columns: allExpenseCsvColumns,
+                    fileName: createAccountingCsvFileName(selectedMonth, "rejected-hold"),
+                  })
+                }
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+              >
+                <Download className="h-4.5 w-4.5" strokeWidth={1.8} />
+                반려/수정요청/보류 CSV
+              </button>
+            </div>
             <button
               type="button"
               onClick={() => window.alert("증빙 파일 다운로드 기능은 추후 연동 예정입니다.")}

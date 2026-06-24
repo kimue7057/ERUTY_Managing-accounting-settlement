@@ -4,6 +4,7 @@ out
 dist
 .turbo
 coverage
+test-results
 *.log
 .env
 .env.local

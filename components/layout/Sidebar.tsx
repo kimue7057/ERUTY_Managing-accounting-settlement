@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
 import {
   ClipboardCheck,
@@ -9,16 +9,24 @@ import {
   Files,
   FolderKanban,
   LayoutDashboard,
+  LogOut,
   NotebookPen,
   ReceiptText,
   Settings2,
   WalletCards,
 } from "lucide-react";
 
+import { useAuth } from "@/components/auth/AuthProvider";
+import {
+  canAccessPath,
+  getUserInitials,
+  mapAuthRoleLabel,
+} from "@/utils/auth";
+
 type SidebarItem = {
   label: string;
   icon: LucideIcon;
-  href?: string;
+  href: string;
   matches: (pathname: string) => boolean;
 };
 
@@ -90,6 +98,23 @@ function itemClassName(isActive: boolean) {
 
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const { profile, signOut } = useAuth();
+
+  const visibleItems = sidebarItems.filter((item) =>
+    profile?.role ? canAccessPath(profile.role, item.href) : false,
+  );
+
+  async function handleSignOut() {
+    const signOutError = await signOut();
+
+    if (signOutError) {
+      window.alert(signOutError);
+      return;
+    }
+
+    router.replace("/login");
+  }
 
   return (
     <aside className="hidden w-72 shrink-0 border-r border-slate-200/80 bg-white/85 px-5 py-6 backdrop-blur lg:flex lg:flex-col">
@@ -112,43 +137,51 @@ export function Sidebar() {
       </div>
 
       <nav className="mt-6 flex-1 space-y-1.5">
-        {sidebarItems.map((item) => {
+        {visibleItems.map((item) => {
           const Icon = item.icon;
           const isActive = item.matches(pathname);
 
-          if (item.href) {
-            return (
-              <Link
-                key={item.label}
-                href={item.href}
-                className={itemClassName(isActive)}
-                aria-current={isActive ? "page" : undefined}
-              >
-                <Icon className="h-5 w-5" strokeWidth={1.8} />
-                <span>{item.label}</span>
-              </Link>
-            );
-          }
-
           return (
-            <button
+            <Link
               key={item.label}
-              type="button"
-              className={itemClassName(false)}
-              aria-disabled="true"
+              href={item.href}
+              className={itemClassName(isActive)}
+              aria-current={isActive ? "page" : undefined}
             >
               <Icon className="h-5 w-5" strokeWidth={1.8} />
               <span>{item.label}</span>
-            </button>
+            </Link>
           );
         })}
       </nav>
 
-      <div className="rounded-3xl border border-slate-200 bg-[var(--card-secondary)] p-4 shadow-sm">
-        <p className="text-sm font-semibold text-slate-900">10단계 프로토타입</p>
-        <p className="mt-2 text-sm leading-6 text-slate-500">
-          승인, 자금, 예산, 정산, 회계 자료에 이어 시스템 운영 설정 화면까지 모두 이어서 확인할 수 있습니다.
-        </p>
+      <div className="space-y-3">
+        <div className="rounded-3xl border border-slate-200 bg-[var(--card-secondary)] p-4 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--primary-soft)] text-sm font-semibold text-[var(--primary)]">
+              {getUserInitials(profile?.name)}
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-slate-900">
+                {profile?.name ?? "로그인 사용자"}
+              </p>
+              <p className="truncate text-xs text-slate-500">
+                {[profile?.department, profile?.position || mapAuthRoleLabel(profile?.role ?? "employee")]
+                  .filter((value) => value && value.trim().length > 0)
+                  .join(" · ")}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => void handleSignOut()}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+        >
+          <LogOut className="h-4 w-4" strokeWidth={1.8} />
+          로그아웃
+        </button>
       </div>
     </aside>
   );

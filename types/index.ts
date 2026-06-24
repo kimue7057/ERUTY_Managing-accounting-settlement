@@ -1,5 +1,20 @@
 export type RoleView = "직원 보기" | "관리자 보기" | "대표 보기";
 
+export type AuthRole = "employee" | "manager" | "admin";
+
+export type ProfileStatus = "active" | "inactive";
+
+export type AuthProfile = {
+  id: string;
+  email: string;
+  name: string;
+  department: string;
+  position: string;
+  role: AuthRole;
+  status: ProfileStatus;
+  isActive: boolean;
+};
+
 export type SummaryIconKey =
   | "holding"
   | "available"
@@ -44,11 +59,17 @@ export type PendingApproval = {
   urgency: UrgencyLevel;
 };
 
+export type BudgetHealthStatus = "정상" | "주의" | "초과위험" | "초과";
+
 export type ProjectBudget = {
+  id: string;
   name: string;
   totalBudget: number;
   spentBudget: number;
+  remainingBudget: number;
   usageRate: number;
+  status: BudgetHealthStatus;
+  budgetConfigured: boolean;
 };
 
 export type ExpenseCategory = {
@@ -190,8 +211,6 @@ export type FundTransaction = {
   balanceAfter: number;
   linkedRequestNumber: string | null;
 };
-
-export type BudgetHealthStatus = "정상" | "주의" | "초과위험" | "초과";
 
 export type ProjectBudgetSummaryItem = {
   id: string;

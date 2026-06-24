@@ -9,6 +9,7 @@ import {
   Search,
 } from "lucide-react";
 
+import { useAuth } from "@/components/auth/AuthProvider";
 import { AmountText } from "@/components/common/AmountText";
 import { DashboardTable } from "@/components/common/DashboardTable";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -70,14 +71,6 @@ const summaryDefinitions = [
     description: "반려되었거나 증빙 부족으로 보류된 금액",
   },
 ] as const;
-
-type TemporaryEmployeeRow = {
-  id: string;
-  name: string;
-  department: string;
-  role: string;
-  is_active: boolean;
-};
 
 type ExpenseHistoryRequesterRelation = {
   id: string;
@@ -235,19 +228,19 @@ function mapExpenseRequestToHistoryRecord(
     status: mapExpenseStatus(row.status),
     attachmentStatus: mapAttachmentStatus(row.evidence_status),
     requestedAt: formatDateOnly(requestedAtValue),
-    requesterName: requester?.name ?? "임시 사용자",
+    requesterName: requester?.name ?? "미지정 사용자",
     requesterDepartment: requester?.department ?? "-",
     projectName: project?.name ?? "미지정 프로젝트",
   };
 }
 
 export default function ExpenseHistoryPage() {
+  const { isLoading: isAuthLoading, profile } = useAuth();
   const [statusFilter, setStatusFilter] = useState("전체");
   const [expenseTypeFilter, setExpenseTypeFilter] = useState("전체");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedItem, setSelectedItem] = useState<ExpenseHistoryRecord | null>(null);
   const [historyItems, setHistoryItems] = useState<ExpenseHistoryRecord[]>([]);
-  const [temporaryEmployee, setTemporaryEmployee] = useState<TemporaryEmployeeRow | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -257,6 +250,10 @@ export default function ExpenseHistoryPage() {
     async function loadExpenseHistory() {
       setIsLoading(true);
       setLoadError(null);
+
+      if (isAuthLoading) {
+        return;
+      }
 
       if (!isSupabaseConfigured) {
         if (!isMounted) {
@@ -270,34 +267,17 @@ export default function ExpenseHistoryPage() {
         return;
       }
 
+      if (!profile?.id) {
+        if (isMounted) {
+          setLoadError("로그인 사용자 프로필을 찾을 수 없습니다. 다시 로그인해주세요.");
+          setHistoryItems([]);
+          setIsLoading(false);
+        }
+        return;
+      }
+
       try {
         const supabase = getSupabaseBrowserClient();
-
-        const { data: employeeData, error: employeeError } = await supabase
-          .from("profiles")
-          .select("id, name, department, role, is_active")
-          .eq("role", "employee")
-          .eq("is_active", true)
-          .order("created_at", { ascending: true })
-          .limit(1);
-
-        if (employeeError) {
-          throw employeeError;
-        }
-
-        const employee = employeeData?.[0] ?? null;
-
-        if (!employee) {
-          throw new Error("내 지출 내역을 조회할 임시 직원 프로필을 찾을 수 없습니다.");
-        }
-
-        if (!isMounted) {
-          return;
-        }
-
-        setTemporaryEmployee(employee);
-
-        // TODO: Auth 연동 후에는 첫 번째 employee가 아니라 로그인한 사용자의 auth.uid() 기준으로 조회해야 합니다.
         const expenseRequestsResult = await supabase
           .from("expense_requests")
           .select(
@@ -333,7 +313,7 @@ export default function ExpenseHistoryPage() {
               )
             `,
           )
-          .eq("user_id", employee.id)
+          .eq("user_id", profile.id)
           .order("requested_at", { ascending: false })
           .order("created_at", { ascending: false });
 
@@ -373,7 +353,7 @@ export default function ExpenseHistoryPage() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [isAuthLoading, profile?.id]);
 
   const expenseTypeFilterOptions = useMemo(() => {
     const optionSet = new Set<string>(expenseHistoryTypeOptions);
@@ -489,11 +469,11 @@ export default function ExpenseHistoryPage() {
                 상태, 경비 유형, 제목 또는 사용처 기준으로 내역을 빠르게 좁혀볼 수 있습니다.
               </p>
               <p className="mt-2 text-xs text-slate-500">
-                현재는 로그인 연동 전이라{" "}
+                현재{" "}
                 <span className="font-semibold text-slate-700">
-                  {temporaryEmployee?.name ?? "임시 직원"}
+                  {profile?.name ?? "로그인 사용자"}
                 </span>
-                {" "}기준으로 조회합니다.
+                {" "}본인의 `expense_requests`만 조회합니다.
               </p>
             </div>
             <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
@@ -651,7 +631,7 @@ export default function ExpenseHistoryPage() {
         {!isLoading && !loadError && historyItems.length === 0 ? (
           <EmptyState
             title="등록된 지출 요청이 없습니다."
-            description="현재 임시 사용자 기준으로 조회된 expense_requests 데이터가 없습니다."
+            description="현재 로그인 사용자 기준으로 조회된 expense_requests 데이터가 없습니다."
           />
         ) : null}
 

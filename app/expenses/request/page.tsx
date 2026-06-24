@@ -4,6 +4,7 @@ import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { useAuth } from "@/components/auth/AuthProvider";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ExpenseGuidePanel } from "@/components/expenses/ExpenseGuidePanel";
 import { ExpenseRequestForm } from "@/components/expenses/ExpenseRequestForm";
@@ -32,13 +33,6 @@ type ProjectOptionRow = {
 type ExpenseCategoryOptionRow = {
   id: string;
   name: string;
-  is_active: boolean;
-};
-
-type TemporaryUserRow = {
-  id: string;
-  name: string;
-  role: string;
   is_active: boolean;
 };
 
@@ -238,6 +232,12 @@ function normalizeStorageFileName(fileName: string) {
   return normalized.length > 0 ? normalized : `expense-evidence-${Date.now()}`;
 }
 
+function createAttachmentStoragePath(expenseRequestId: string, fileName: string) {
+  const safeFileName = normalizeStorageFileName(fileName);
+  const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+  return `expense-requests/${expenseRequestId}/${timestamp}-${safeFileName}`;
+}
+
 function mapAttachmentCategoryToDbFileType(category: AttachmentCategory): DbAttachmentFileType {
   switch (category) {
     case "영수증":
@@ -256,35 +256,6 @@ function mapAttachmentCategoryToDbFileType(category: AttachmentCategory): DbAtta
   }
 }
 
-async function resolveTemporaryUser() {
-  const supabase = getSupabaseBrowserClient();
-
-  const [employeeResult, fallbackProfileResult] = await Promise.all([
-    supabase
-      .from("profiles")
-      .select("id, name, role, is_active")
-      .eq("role", "employee")
-      .eq("is_active", true)
-      .order("created_at", { ascending: true })
-      .limit(1),
-    supabase
-      .from("profiles")
-      .select("id, name, role, is_active")
-      .order("created_at", { ascending: true })
-      .limit(1),
-  ]);
-
-  if (employeeResult.error) {
-    throw employeeResult.error;
-  }
-
-  if (fallbackProfileResult.error) {
-    throw fallbackProfileResult.error;
-  }
-
-  return employeeResult.data?.[0] ?? fallbackProfileResult.data?.[0] ?? null;
-}
-
 async function uploadEvidenceAttachments({
   expenseRequestId,
   uploadedBy,
@@ -300,8 +271,7 @@ async function uploadEvidenceAttachments({
   let statusUpdateFailed = false;
 
   for (const attachment of attachments) {
-    const safeFileName = normalizeStorageFileName(attachment.file.name);
-    const filePath = `expense-requests/${expenseRequestId}/${safeFileName}`;
+    const filePath = createAttachmentStoragePath(expenseRequestId, attachment.file.name);
 
     const { error: storageError } = await supabase.storage
       .from(expenseEvidenceBucketName)
@@ -312,7 +282,12 @@ async function uploadEvidenceAttachments({
       });
 
     if (storageError) {
-      details.push(`[${attachment.file.name}] 파일 업로드에 실패했습니다.`);
+      details.push(
+        `[${attachment.file.name}] ${getUserFacingSupabaseMessage(
+          storageError,
+          "파일 업로드에 실패했습니다.",
+        )}`,
+      );
       continue;
     }
 
@@ -329,7 +304,12 @@ async function uploadEvidenceAttachments({
       .insert(attachmentPayload);
 
     if (attachmentInsertError) {
-      details.push(`[${attachment.file.name}] 첨부 정보 저장에 실패했습니다.`);
+      details.push(
+        `[${attachment.file.name}] ${getUserFacingSupabaseMessage(
+          attachmentInsertError,
+          "첨부 정보 저장에 실패했습니다.",
+        )}`,
+      );
       await supabase.storage.from(expenseEvidenceBucketName).remove([filePath]);
       continue;
     }
@@ -346,7 +326,12 @@ async function uploadEvidenceAttachments({
     statusUpdateFailed = Boolean(evidenceStatusUpdateError);
 
     if (statusUpdateFailed) {
-      details.push("증빙 상태 업데이트에 실패했습니다.");
+      details.push(
+        getUserFacingSupabaseMessage(
+          evidenceStatusUpdateError,
+          "증빙 상태 업데이트에 실패했습니다.",
+        ),
+      );
     }
   }
 
@@ -362,13 +347,13 @@ async function uploadEvidenceAttachments({
 
 export default function ExpenseRequestPage() {
   const router = useRouter();
+  const { isLoading: isAuthLoading, profile } = useAuth();
   const [formData, setFormData] = useState<ExpenseRequestFormData>(() => createInitialFormData());
   const [errors, setErrors] = useState<ExpenseRequestErrors>({});
   const [projectOptions, setProjectOptions] = useState<ProjectOptionRow[]>([]);
   const [expenseCategoryOptions, setExpenseCategoryOptions] = useState<
     ExpenseCategoryOptionRow[]
   >([]);
-  const [temporaryUserPreview, setTemporaryUserPreview] = useState<TemporaryUserRow | null>(null);
   const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<PendingAttachmentFile[]>([]);
   const [attachmentSelectionState, setAttachmentSelectionState] =
     useState<AttachmentSelectionState | null>(null);
@@ -397,7 +382,7 @@ export default function ExpenseRequestPage() {
 
       try {
         const supabase = getSupabaseBrowserClient();
-        const [projectsResult, categoriesResult, employeeResult, fallbackProfileResult] =
+        const [projectsResult, categoriesResult] =
           await Promise.all([
             supabase
               .from("projects")
@@ -409,18 +394,6 @@ export default function ExpenseRequestPage() {
               .select("id, name, is_active")
               .eq("is_active", true)
               .order("created_at", { ascending: true }),
-            supabase
-              .from("profiles")
-              .select("id, name, role, is_active")
-              .eq("role", "employee")
-              .eq("is_active", true)
-              .order("created_at", { ascending: true })
-              .limit(1),
-            supabase
-              .from("profiles")
-              .select("id, name, role, is_active")
-              .order("created_at", { ascending: true })
-              .limit(1),
           ]);
 
         if (!isMounted) {
@@ -434,13 +407,6 @@ export default function ExpenseRequestPage() {
 
         setProjectOptions(projectsResult.data ?? []);
         setExpenseCategoryOptions(categoriesResult.data ?? []);
-
-        const previewUser =
-          employeeResult.data?.[0] ??
-          fallbackProfileResult.data?.[0] ??
-          null;
-
-        setTemporaryUserPreview(previewUser);
       } catch {
         if (isMounted) {
           setReferenceError("기준 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
@@ -650,6 +616,22 @@ export default function ExpenseRequestPage() {
       return;
     }
 
+    if (isAuthLoading) {
+      setSubmitResult({
+        status: "error",
+        message: "로그인 사용자 정보를 확인하는 중입니다. 잠시 후 다시 시도해주세요.",
+      });
+      return;
+    }
+
+    if (!profile?.id) {
+      setSubmitResult({
+        status: "error",
+        message: "로그인 사용자 프로필을 찾을 수 없습니다. 다시 로그인해주세요.",
+      });
+      return;
+    }
+
     if (!isSupabaseConfigured) {
       setSubmitResult({
         status: "error",
@@ -672,13 +654,6 @@ export default function ExpenseRequestPage() {
 
     try {
       const supabase = getSupabaseBrowserClient();
-      const resolvedTemporaryUser =
-        temporaryUserPreview ?? (await resolveTemporaryUser());
-
-      if (!resolvedTemporaryUser?.id) {
-        throw { message: "임시 제출에 사용할 프로필을 찾지 못했습니다." } satisfies SupabaseErrorLike;
-      }
-
       const selectedProject = projectOptions.find((project) => project.id === formData.relatedProject);
       const selectedCategory = expenseCategoryOptions.find(
         (category) => category.id === formData.expenseType,
@@ -696,7 +671,7 @@ export default function ExpenseRequestPage() {
 
       const insertPayload: ExpenseRequestInsertPayload = {
         request_no: createRequestNumber(),
-        user_id: resolvedTemporaryUser.id,
+        user_id: profile.id,
         project_id: selectedProject.id,
         category_id: selectedCategory.id,
         title: formData.title.trim(),
@@ -748,7 +723,7 @@ export default function ExpenseRequestPage() {
 
         const uploadResult = await uploadEvidenceAttachments({
           expenseRequestId: insertedRow.id,
-          uploadedBy: resolvedTemporaryUser.id,
+          uploadedBy: profile.id,
           attachments: pendingAttachmentFiles,
         });
 

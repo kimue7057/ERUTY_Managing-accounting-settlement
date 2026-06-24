@@ -10,6 +10,7 @@ import {
   WalletCards,
 } from "lucide-react";
 
+import { useAuth } from "@/components/auth/AuthProvider";
 import { AmountText } from "@/components/common/AmountText";
 import { DashboardTable } from "@/components/common/DashboardTable";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -162,6 +163,7 @@ function mapExpenseRequestToQueueItem(row: ExpenseRequestQueueRow): ApprovalQueu
 }
 
 export default function ApprovalPendingPage() {
+  const { profile } = useAuth();
   const [statusFilter, setStatusFilter] =
     useState<(typeof approvalStatusOptions)[number]>("전체");
   const [expenseTypeFilter, setExpenseTypeFilter] =
@@ -516,12 +518,16 @@ export default function ApprovalPendingPage() {
                 <StatusBadge status={item.status} />
               </td>
               <td className="px-4 py-4 text-center">
-                <Link
-                  href={`/approvals/pending/${encodeURIComponent(item.id)}`}
-                  className="inline-flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
-                >
-                  검토
-                </Link>
+                {profile?.role === "manager" || profile?.role === "admin" ? (
+                  <Link
+                    href={`/approvals/pending/${encodeURIComponent(item.id)}`}
+                    className="inline-flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+                  >
+                    검토
+                  </Link>
+                ) : (
+                  <span className="text-xs font-semibold text-slate-400">권한 없음</span>
+                )}
               </td>
             </tr>
           ))}

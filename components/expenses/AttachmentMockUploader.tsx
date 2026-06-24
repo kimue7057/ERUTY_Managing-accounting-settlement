@@ -89,7 +89,7 @@ export function AttachmentMockUploader({
           영수증, 카드전표, PDF 증빙 자료를 첨부해서 승인 검토와 정산 확인에 필요한 근거를 남겨주세요.
         </p>
         <p className="mt-1 text-xs text-amber-700">
-          허용 파일 형식은 `jpg`, `png`, `pdf`이며 파일당 최대 10MB까지 업로드할 수 있습니다.
+          허용 파일 형식은 `jpg`, `jpeg`, `png`, `pdf`이고 파일은 최대 10MB까지 업로드할 수 있습니다.
         </p>
       </div>
 

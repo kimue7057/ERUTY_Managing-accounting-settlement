@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { Noto_Sans_KR } from "next/font/google";
 
-import { Sidebar } from "@/components/layout/Sidebar";
+import { AuthProvider } from "@/components/auth/AuthProvider";
+import { AppShell } from "@/components/layout/AppShell";
 
 import "./globals.css";
 
@@ -24,16 +25,9 @@ export default function RootLayout({
   return (
     <html lang="ko">
       <body className={`${notoSansKr.variable} antialiased`}>
-        <div className="min-h-screen">
-          <div className="mx-auto flex min-h-screen max-w-[1920px]">
-            <Sidebar />
-            <main className="min-w-0 flex-1">
-              <div className="min-h-screen px-5 py-5 sm:px-6 lg:px-8 lg:py-6 xl:px-10">
-                {children}
-              </div>
-            </main>
-          </div>
-        </div>
+        <AuthProvider>
+          <AppShell>{children}</AppShell>
+        </AuthProvider>
       </body>
     </html>
   );
